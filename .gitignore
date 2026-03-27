@@ -8,6 +8,16 @@ __pycache__/
 
 # Local artifacts
 .artifacts/
+artifacts/
+logs/
+tmp/
+temp/
+output/
+outputs/
+results/
+exports/
+snapshots/
+checkpoints/
 
 # Out-of-scope documentation and report-style outputs
 docs/
@@ -17,6 +27,32 @@ data/features/
 data/ingestion_health/
 data/raw/
 data/signals/
+data/reports/
+data/research/
+data/audit/
+data/audits/
+research/
+reports/
+audit/
+audits/
+notebooks/
+
+# Document/report formats (README.md is explicitly re-included below)
+*.md
+*.rst
+*.adoc
+*.pdf
+*.html
+
+# Common report/audit artifact naming patterns
+*report*.json
+*report*.csv
+*report*.txt
+*audit*.json
+*audit*.csv
+*audit*.txt
+*calibration*.json
+*calibration*.csv
 
 # Build metadata
 *.egg-info/
