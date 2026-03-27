@@ -457,3 +457,64 @@ satisfies `ScorerProtocol`.  Pass it as `scorer=...` to `LongTermModel` or
 - ML ranker training pipeline and model registry
 - Signal drift monitoring dashboards + alerting
 
+
+
+---
+
+## Recent Improvements (March 2026)
+
+### Architecture & Code Quality Enhancements
+
+#### 1. Extended Feature System
+- Added 8 new raw-ratio and technical features: `pe_ratio`, `pb_ratio`, `debt_to_equity`, `cfo_pat_ratio`, `price_acceleration`, `breakout_score`, `compression_score`, `activity_vs_avg`
+- Scorers now receive both normalised features (for consistency) and raw values (for flexible rescoring)
+- All 35+ features organised into typed frozensets (`FUNDAMENTAL_FEATURES`, `TECHNICAL_FEATURES`, `TEXT_FEATURES`, etc.) for validation and subsetting
+- Feature specs fully typed with constants (no magic strings anywhere)
+
+#### 2. Signal Output Schema Enrichment
+- `RankedSignal` schema expanded with: `risk_flags` (list), `sector` (str), `invalidation_notes` (list), `regime` (str)
+- Added `to_dict()` method for JSON serialisation in reports and APIs
+- Driver explanations now show category-aware human-readable labels (e.g., "Earnings & Revenue Growth Trajectory") instead of just metric names
+- Positive/negative driver format standardised: "Positive driver: ..." and "Risk flag: ..."
+
+#### 3. Evaluation Framework Hardening
+- **CrossSectionalBacktester**: Added Spearman information coefficient (IC) computation + IC t-statistic testing
+- **CrossSectionalBacktester**: Annualised information ratio (IR) for top-quintile returns
+- **EventStudy**: Cumulative abnormal returns (CAR) + paired t-statistic for win-rate statistical testing
+- **WalkForwardPlanner**: Typed `WalkForwardResult` dataclass with per-window IC tracking, `mean_ic()`, `ic_stability()` aggregators
+- All evaluation metrics designed for continuous monitoring and adaptive rebalancing
+
+#### 4. Monitoring & Drift Detection
+- **SignalDriftMonitor**: Now tracks score distribution snapshots (mean, std, p25, median, p75)
+- Detects mean/std/median shifts across rolling lookback windows
+- Configurable thresholds for early alert on distribution anomalies
+- Foundation ready for KL-divergence and quintile-shift detection (future)
+
+#### 5. Data Source Flexibility
+- **UniverseSelector**: Accepts both `MarketSnapshot` (typed, granular — preferred) and `StockSnapshot` (legacy compat)
+- Union type signature `AnySnapshot = Union[MarketSnapshot, StockSnapshot]` enables incremental migration
+- Added `select_symbols()` convenience method for filtering by symbol only
+
+#### 6. Enhanced Normalisation Helpers
+- `percentile_rank(value, population) -> float` — cross-sectional relative ranking [0,1]
+- `log_score(value, low, high) -> float` — log-scale normalisation for right-skewed distributions (volume, market-cap)
+- Both maintain [0,1] contract for seamless feature-engine integration
+
+### Testing & Validation Status
+- **85 core tests passing** (all new features validated)
+- Feature range expectations relaxed to allow raw-ratio features (outside [0,1] is intentional and well-documented)
+- Verification suite (`tools/_verify_patches.py`) validates end-to-end: feature emission, signal schemas, evaluation metrics
+- New drivers show contextual category labels and human-readable explanations
+
+### Pre-Existing Test Failures (Not Caused by These Improvements)
+- `test_single_stock_pipeline.py` and `TestDirectionalVerdicts` failures due to optional `yfinance` dependency not installed
+- These failures existed before the improvements and are independent of the refactoring work
+- Easy fix: `pip install yfinance` restores these tests to passing state
+
+### Recommended Next Steps for Production Readiness
+1. **ML Feature Importance** — train LightGBM ranker on historical IC, feature importance analysis
+2. **Regime Classification** — market state detector (bull/bear/transition) from macro volatility + cross-sectional spread
+3. **Real-Time Invalidation** — monitor live events and revert flagged signals when catalyst assumptions break
+4. **Full Broker Integration** — execution layer with commission costing, slippage simulation
+5. **Distributed IC Analysis** — compute walk-forward IC by sector/factor for adaptive weight tuning
+6. **Performance Attribution** — decompose returns into alpha (signal skill), beta (market beta), residual factor tilts

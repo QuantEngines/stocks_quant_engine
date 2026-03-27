@@ -61,6 +61,7 @@ class ResearchSignalGenerator:
                 missing_features=exp.missing_features,
             ),
             rejection_reasons=exp.rejection_reasons,
+            risk_flags=list(risk.flags),
         )
 
     def build_swing(
@@ -101,6 +102,7 @@ class ResearchSignalGenerator:
                 missing_features=exp.missing_features,
             ),
             rejection_reasons=exp.rejection_reasons,
+            risk_flags=list(risk.flags),
         )
 
     def build_short(

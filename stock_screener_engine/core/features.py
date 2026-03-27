@@ -66,6 +66,14 @@ from stock_screener_engine.core.feature_specs import (
     FEAT_HIGH_IMPACT_EVENT_FLAG,
     FEAT_VOLATILITY_REGIME,
     FEAT_VOLUME_CONFIRMATION,
+    FEAT_PE_RATIO,
+    FEAT_PB_RATIO,
+    FEAT_DEBT_TO_EQUITY,
+    FEAT_CFO_PAT_RATIO,
+    FEAT_BREAKOUT_SCORE,
+    FEAT_COMPRESSION_SCORE,
+    FEAT_PRICE_ACCELERATION,
+    FEAT_ACTIVITY_VS_AVG,
 )
 from stock_screener_engine.core.technical_indicators import adx, atr, breakout_compression, momentum, rolling_beta
 
@@ -198,6 +206,7 @@ class FeatureEngine:
                 FEAT_EARNINGS_STABILITY, FEAT_LEVERAGE_TREND,
                 FEAT_SECTOR_PE_ZSCORE, FEAT_SECTOR_PB_ZSCORE,
                 FEAT_ROLLING_PE_ZSCORE, FEAT_ROLLING_PB_ZSCORE,
+                FEAT_PE_RATIO, FEAT_PB_RATIO, FEAT_DEBT_TO_EQUITY, FEAT_CFO_PAT_RATIO,
             ]}
 
         metrics = valuation_metrics or {}
@@ -240,6 +249,11 @@ class FeatureEngine:
             FEAT_SECTOR_PB_ZSCORE: pb_sector_z,
             FEAT_ROLLING_PE_ZSCORE: pe_rolling_z,
             FEAT_ROLLING_PB_ZSCORE: pb_rolling_z,
+            # raw ratios for scoring functions that apply own normalisation
+            FEAT_PE_RATIO: max(0.0, f.pe_ratio),
+            FEAT_PB_RATIO: max(0.0, f.pb_ratio),
+            FEAT_DEBT_TO_EQUITY: max(0.0, f.debt_to_equity),
+            FEAT_CFO_PAT_RATIO: _cfo_pat_ratio(f),
         }
 
     def _governance_features(self, g: GovernanceSnapshot | None) -> dict[str, float]:
@@ -269,6 +283,10 @@ class FeatureEngine:
                 FEAT_VOLUME_CONFIRMATION: vol_norm,
                 FEAT_RELATIVE_STRENGTH: delivery_signal,
                 FEAT_DELIVERY_RATIO: delivery_signal,
+                FEAT_BREAKOUT_SCORE: 0.5,
+                FEAT_COMPRESSION_SCORE: 0.5,
+                FEAT_PRICE_ACCELERATION: 0.0,
+                FEAT_ACTIVITY_VS_AVG: _activity_vs_avg(m, None),
             }
 
         high = [float(b.get("high", 0.0) or 0.0) for b in historical_bars]
@@ -282,6 +300,10 @@ class FeatureEngine:
                 FEAT_VOLUME_CONFIRMATION: vol_norm,
                 FEAT_RELATIVE_STRENGTH: delivery_signal,
                 FEAT_DELIVERY_RATIO: delivery_signal,
+                FEAT_BREAKOUT_SCORE: 0.5,
+                FEAT_COMPRESSION_SCORE: 0.5,
+                FEAT_PRICE_ACCELERATION: 0.0,
+                FEAT_ACTIVITY_VS_AVG: _activity_vs_avg(m, None),
             }
 
         atr_value = atr(high, low, close, period=14)
@@ -301,6 +323,15 @@ class FeatureEngine:
         momentum_strength = _clamp((mom_value + 0.2) / 0.4)
         breakout_signal = _clamp(compression)
 
+        # breakout proximity: how close current close is to range high
+        range_hi = max(close[-20:])
+        range_lo = min(close[-20:])
+        range_span = range_hi - range_lo
+        _bk = _clamp((close[-1] - range_lo) / range_span) if range_span > 0 else 0.5
+        # compression: tight ATR relative to range = good setup
+        _cp = _clamp(1.0 - min(1.0, atr_norm / 0.06)) if atr_norm > 0 else 0.5
+        # price acceleration: 2nd derivative of 10-day return
+        _pa = _price_acceleration(close)
         return {
             FEAT_TREND_STRENGTH: _clamp(0.7 * trend_strength + 0.3 * breakout_signal),
             FEAT_MOMENTUM_STRENGTH: momentum_strength,
@@ -308,6 +339,10 @@ class FeatureEngine:
             FEAT_VOLUME_CONFIRMATION: vol_norm,
             FEAT_RELATIVE_STRENGTH: relative_strength,
             FEAT_DELIVERY_RATIO: delivery_signal,
+            FEAT_BREAKOUT_SCORE: _bk,
+            FEAT_COMPRESSION_SCORE: _cp,
+            FEAT_PRICE_ACCELERATION: _pa,
+            FEAT_ACTIVITY_VS_AVG: _activity_vs_avg(m, historical_bars),
         }
 
     def _event_features(
@@ -374,6 +409,50 @@ class FeatureEngine:
             else:
                 out[key] = _clamp(raw)
         return out
+
+
+
+def _cfo_pat_ratio(f) -> float:
+    """Cash-flow-to-earnings quality proxy.
+
+    A value near 1.0 means FCF matches accounting profit (good quality).
+    Capped at 3.0 to avoid outlier dominance.
+    """
+    if f.net_profit_margin <= 1e-6:
+        return 1.0
+    ratio = f.free_cash_flow_margin / f.net_profit_margin
+    return max(0.0, min(3.0, ratio))
+
+
+def _price_acceleration(close: list[float], short: int = 10, long: int = 20) -> float:
+    """Second derivative of price: momentum of momentum.
+
+    Positive = accelerating uptrend; negative = decelerating or reversing.
+    Clipped to [-0.20, 0.20] for feature stability.
+    """
+    if len(close) < long + 1:
+        return 0.0
+    mom_recent = (close[-1] - close[-short]) / max(1e-8, abs(close[-short]))
+    mom_older  = (close[-short] - close[-long]) / max(1e-8, abs(close[-long]))
+    return max(-0.20, min(0.20, mom_recent - mom_older))
+
+
+def _activity_vs_avg(m, bars) -> float:
+    """Current session volume relative to 20-day average.
+
+    Returns a ratio clamped to [0.1, 5.0]; 1.0 = exactly average.
+    Uses MarketSnapshot.avg_volume_20d when available, else derives from bars.
+    """
+    from stock_screener_engine.core.entities import MarketSnapshot
+    avg = 0.0
+    if isinstance(m, MarketSnapshot) and m.avg_volume_20d > 0:
+        avg = m.avg_volume_20d
+    elif bars and len(bars) >= 10:
+        vols = [float(b.get("volume", 0.0) or 0.0) for b in bars[-20:]]
+        avg = sum(vols) / len(vols) if vols else 0.0
+    if avg > 0 and m.volume > 0:
+        return max(0.1, min(5.0, m.volume / avg))
+    return 1.0
 
 
 def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:

@@ -76,8 +76,14 @@ class TestComputeFromGranularSnapshots:
             event_signal=0.3,
             market_regime_score=0.4,
         )
+        # Raw ratio features are intentionally outside the standard [0, 1] range;
+        # they are emitted as-is so scorers can apply their own normalisation.
+        _raw_ratio_features = {"pe_ratio", "pb_ratio", "debt_to_equity", "cfo_pat_ratio"}
         for key, value in fv.values.items():
-            assert -1.0 <= value <= 1.5, f"Feature '{key}' = {value} is out of expected range"
+            if key in _raw_ratio_features:
+                assert value >= 0.0, f"Raw ratio feature '{key}' = {value} should be non-negative"
+            else:
+                assert -1.0 <= value <= 1.5, f"Feature '{key}' = {value} is out of expected range"
 
     def test_none_fundamentals_returns_zero_filled_features(
         self,

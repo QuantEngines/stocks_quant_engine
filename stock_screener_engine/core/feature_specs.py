@@ -148,7 +148,34 @@ TEXT_FEATURES: frozenset[str] = frozenset({
     FEAT_GOVERNANCE_RISK_SCORE,
 })
 
-ALL_FEATURES: frozenset[str] = (
+# ---------------------------------------------------------------------------
+# Raw ratio features (emitted alongside normalised counterparts so scorers
+# can apply their own normalisation functions on the raw value)
+# ---------------------------------------------------------------------------
+FEAT_PE_RATIO           = "pe_ratio"
+FEAT_PB_RATIO           = "pb_ratio"
+FEAT_DEBT_TO_EQUITY     = "debt_to_equity"
+FEAT_CFO_PAT_RATIO      = "cfo_pat_ratio"
+
+# ---------------------------------------------------------------------------
+# Extended technical features (emitted when historical bars are available)
+# ---------------------------------------------------------------------------
+FEAT_BREAKOUT_SCORE     = "breakout_score"
+FEAT_COMPRESSION_SCORE  = "compression_score"
+FEAT_PRICE_ACCELERATION = "price_acceleration"
+FEAT_ACTIVITY_VS_AVG    = "activity_vs_avg"
+
+# Re-export updated group frozensets
+FUNDAMENTAL_FEATURES = FUNDAMENTAL_FEATURES | frozenset({
+    FEAT_PE_RATIO, FEAT_PB_RATIO, FEAT_DEBT_TO_EQUITY, FEAT_CFO_PAT_RATIO,
+})
+
+TECHNICAL_FEATURES = TECHNICAL_FEATURES | frozenset({
+    FEAT_BREAKOUT_SCORE, FEAT_COMPRESSION_SCORE,
+    FEAT_PRICE_ACCELERATION, FEAT_ACTIVITY_VS_AVG,
+})
+
+ALL_FEATURES = (
     FUNDAMENTAL_FEATURES
     | TECHNICAL_FEATURES
     | EVENT_FEATURES
