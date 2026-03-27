@@ -1,0 +1,25 @@
+# Python caches and environments
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Local artifacts
+.artifacts/
+
+# Out-of-scope documentation and report-style outputs
+docs/
+data/calibration/
+data/cleaned/
+data/features/
+data/ingestion_health/
+data/raw/
+data/signals/
+
+# Build metadata
+*.egg-info/
+
+# Keep the top-level README as the only document-like tracked file
+!README.md

@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Lint (ruff)
+        run: ruff check stock_screener_engine tests
+
+      - name: Type check (mypy)
+        run: mypy stock_screener_engine
+
+      - name: Tests (pytest)
+        run: pytest -q
+
+      - name: Config snapshot
+        run: python tools/config_snapshot.py
+
+      - name: Calibration report snapshot
+        run: python tools/run_calibration_report.py
+
+      - name: Upload config snapshot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: config-snapshot
+          path: .artifacts/config_snapshot.json
+
+      - name: Upload calibration artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: calibration-artifacts
+          path: data/calibration/

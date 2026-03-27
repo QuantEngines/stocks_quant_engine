@@ -1,0 +1,140 @@
+environment: dev
+log_level: INFO
+storage:
+  root_dir: ./data
+  sqlite_path: ./data/metadata.db
+features:
+  include_sentiment: true
+  include_event_signals: true
+  include_regime_features: true
+  min_liquidity_threshold: 1000000
+nlp:
+  enabled: true
+  enable_sentiment: true
+  enable_event_extraction: true
+  lookback_days: 30
+  decay_half_life_days: 14.0
+  high_impact_threshold: 0.65
+llm:
+  enabled: false
+  provider: heuristic
+  model: heuristic-finance-v1
+  base_url: https://api.openai.com
+  api_key_env: OPENAI_API_KEY
+  timeout_seconds: 30
+  min_confidence: 0.55
+  fallback_to_rules: true
+  enable_management_tone: true
+  audit_low_confidence: true
+  audit_path: ./data
+runtime_data:
+  market_provider: yfinance
+  market_universe:
+    - RELIANCE
+    - TCS
+    - INFY
+    - HDFCBANK
+    - ICICIBANK
+    - SBIN
+    - LT
+    - ITC
+    - HINDUNILVR
+    - BHARTIARTL
+  news_provider: free_rss
+  filings_provider: exchange_announcements
+  transcripts_provider: none
+integrations:
+  zerodha:
+    enabled: false
+    api_key_env: SSE_ZERODHA_API_KEY
+    api_secret_env: SSE_ZERODHA_API_SECRET
+    access_token_env: SSE_ZERODHA_ACCESS_TOKEN
+  breeze:
+    enabled: false
+    api_key_env: SSE_BREEZE_API_KEY
+    api_secret_env: SSE_BREEZE_API_SECRET
+    session_token_env: SSE_BREEZE_SESSION_TOKEN
+scoring:
+  long_term_min_score: 24.0
+  swing_min_score: 28.0
+  short_min_score: 58.0
+  max_risk_penalty: 30.0
+  long_term_weights:
+    growth_quality: 18.0
+    profitability_quality: 17.0
+    balance_sheet_health: 15.0
+    cash_flow_quality: 12.0
+    valuation_sanity: 12.0
+    governance_proxy: 10.0
+    event_catalyst: 8.0
+    regime_tailwind: 8.0
+  swing_weights:
+    trend_strength: 20.0
+    momentum_strength: 18.0
+    relative_strength_proxy: 14.0
+    volatility_regime: 12.0
+    volume_confirmation: 12.0
+    event_catalyst: 12.0
+    sentiment_score: 12.0
+  risk_weights:
+    liquidity_risk: 0.20
+    volatility_risk: 0.20
+    leverage_risk: 0.20
+    earnings_instability_risk: 0.15
+    event_uncertainty_risk: 0.15
+    governance_risk: 0.10
+    text_uncertainty_risk: 0.05
+  regime_switching:
+    enabled: true
+    bull_threshold: 0.25
+    bear_threshold: -0.25
+  long_term_regime_profiles:
+    bull:
+      growth_quality: 20.0
+      valuation_sanity: 10.0
+      event_catalyst: 10.0
+    bear:
+      growth_quality: 14.0
+      valuation_sanity: 16.0
+      balance_sheet_health: 18.0
+      governance_proxy: 12.0
+    sideways:
+      growth_quality: 18.0
+      valuation_sanity: 12.0
+      event_catalyst: 8.0
+  swing_regime_profiles:
+    bull:
+      trend_strength: 22.0
+      momentum_strength: 20.0
+      volatility_regime: 10.0
+    bear:
+      trend_strength: 18.0
+      volatility_regime: 16.0
+      volume_confirmation: 14.0
+      event_catalyst: 14.0
+    sideways:
+      trend_strength: 20.0
+      momentum_strength: 16.0
+      relative_strength_proxy: 16.0
+  calibration_auto_tune:
+    enabled: false
+    report_path: ./data/calibration/calibration_report_latest.json
+    learning_rate: 0.30
+  ranking:
+    top_k_long_term: 25
+    top_k_swing: 25
+    portfolio:
+      enabled: true
+      max_positions_long: 12
+      max_positions_swing: 10
+      max_sector_positions: 3
+      min_avg_daily_volume: 1000000
+      max_single_position_weight: 0.12
+      capital_base: 1000000
+      min_position_notional: 25000
+      sector_target_weights: {}
+      sector_target_tolerance: 0.05
+      long_min_position_notional: null
+      swing_min_position_notional: null
+      long_sector_target_weights: null
+      swing_sector_target_weights: null
