@@ -54,6 +54,11 @@ notebooks/
 *calibration*.json
 *calibration*.csv
 
+# Generated local databases and binary analytics stores
+*.db
+*.sqlite
+*.sqlite3
+
 # Build metadata
 *.egg-info/
 
