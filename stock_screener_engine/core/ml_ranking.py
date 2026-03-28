@@ -29,6 +29,23 @@ class LinearRankModel:
     feature_means: Mapping[str, float]
     feature_stds: Mapping[str, float]
 
+    def to_payload(self) -> dict[str, dict[str, float]]:
+        """Serialize model parameters into a JSON-safe payload."""
+        return {
+            "feature_weights": {k: float(v) for k, v in self.feature_weights.items()},
+            "feature_means": {k: float(v) for k, v in self.feature_means.items()},
+            "feature_stds": {k: float(v) for k, v in self.feature_stds.items()},
+        }
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Mapping[str, float]]) -> "LinearRankModel":
+        """Create a model from a JSON payload."""
+        return cls(
+            feature_weights={str(k): float(v) for k, v in payload.get("feature_weights", {}).items()},
+            feature_means={str(k): float(v) for k, v in payload.get("feature_means", {}).items()},
+            feature_stds={str(k): max(float(v), 1e-9) for k, v in payload.get("feature_stds", {}).items()},
+        )
+
     def score(self, features: Mapping[str, float]) -> float:
         """Return a scalar alpha score for one feature vector."""
         score = 0.0

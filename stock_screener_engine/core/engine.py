@@ -23,6 +23,8 @@ from stock_screener_engine.core.entities import (
     StockSnapshot,
 )
 from stock_screener_engine.core.features import FeatureEngine
+from stock_screener_engine.core.ml_ranking import LinearRankModel
+from stock_screener_engine.core.regime_detection import RegimeDetector, RegimeThresholds
 from stock_screener_engine.core.ranking import rank_by_long_term, rank_by_swing
 from stock_screener_engine.core.scoring import (
     LongTermScorer,
@@ -90,6 +92,12 @@ class ResearchEngine:
             long_weight_values = tuned.long_term
             swing_weight_values = tuned.swing
 
+        self.regime_detector = RegimeDetector(
+            thresholds=RegimeThresholds(
+                bull_threshold=settings.scoring.regime_switching.bull_threshold,
+                bear_threshold=settings.scoring.regime_switching.bear_threshold,
+            )
+        )
         regime_cfg = RegimeSwitchConfig(
             enabled=settings.scoring.regime_switching.enabled,
             bull_threshold=settings.scoring.regime_switching.bull_threshold,
@@ -128,9 +136,21 @@ class ResearchEngine:
         self.portfolio_adapter = PortfolioConstructionAdapter()
         self.quality = DataQualityChecker()
 
-    def run(self, symbols: list[str] | None = None, regime_score: float = 0.2) -> dict[str, list]:
+    def run(self, symbols: list[str] | None = None, regime_score: float | None = None) -> dict[str, list]:
         symbols = symbols or self.market_data.get_universe()
         snapshots = self.market_data.get_snapshots(symbols)
+
+        if regime_score is None:
+            regime_snapshot = self._detect_regime_snapshot(snapshots)
+            regime_score = float(regime_snapshot["score"])
+        else:
+            regime_snapshot = {
+                "label": self._label_for_regime_score(regime_score),
+                "score": float(regime_score),
+                "momentum": 0.0,
+                "realized_volatility": 0.0,
+                "breadth": 0.5,
+            }
 
         snapshot_quality = self.quality.validate_snapshots(snapshots)
         if not snapshot_quality.passed:
@@ -240,12 +260,30 @@ class ResearchEngine:
             swing_portfolio_positions = swing_portfolio.positions
             swing_portfolio_rejected = swing_portfolio.rejected
 
+        ml_ranked: list[tuple[str, float]] = []
+        ml_long_ranked: list[ScoreCard] = []
+        ml_swing_ranked: list[ScoreCard] = []
+        model = self._load_ml_rank_model()
+        if model is not None:
+            ml_ranked = model.rank({fv.symbol: dict(fv.values) for fv in features})
+            ml_by_symbol = {symbol: score for symbol, score in ml_ranked}
+            ml_long_ranked = sorted(
+                score_cards,
+                key=lambda c: (ml_by_symbol.get(c.symbol, float("-inf")), c.symbol),
+                reverse=True,
+            )
+            ml_swing_ranked = list(ml_long_ranked)
+
         return {
+            "regime_snapshot": regime_snapshot,
             "features": features,
             "text_features": text_feature_rows,
             "scores": score_cards,
             "long_ranked": rank_by_long_term(score_cards),
             "swing_ranked": rank_by_swing(score_cards),
+            "ml_ranked": ml_ranked,
+            "ml_long_ranked": ml_long_ranked,
+            "ml_swing_ranked": ml_swing_ranked,
             "long_signals": long_sorted,
             "swing_signals": swing_sorted,
             "short_signals": short_sorted,
@@ -257,6 +295,58 @@ class ResearchEngine:
             "swing_portfolio_positions": swing_portfolio_positions,
             "swing_portfolio_rejected": swing_portfolio_rejected,
         }
+
+    def _detect_regime_snapshot(self, snapshots: list[StockSnapshot]) -> dict[str, float | str]:
+        if not snapshots:
+            return {
+                "label": "neutral",
+                "score": 0.0,
+                "momentum": 0.0,
+                "realized_volatility": 0.0,
+                "breadth": 0.5,
+            }
+
+        end = max(s.as_of for s in snapshots)
+        start = end - timedelta(days=140)
+        try:
+            index_bars = self.market_data.get_historical("^NSEI", interval="1d", start=start, end=end)
+            snap = self.regime_detector.detect(index_bars=index_bars)
+            return {
+                "label": snap.label,
+                "score": snap.score,
+                "momentum": snap.momentum,
+                "realized_volatility": snap.realized_volatility,
+                "breadth": snap.breadth,
+            }
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            logger.warning("Regime detection fallback to neutral due to: %s", exc)
+            return {
+                "label": "neutral",
+                "score": 0.0,
+                "momentum": 0.0,
+                "realized_volatility": 0.0,
+                "breadth": 0.5,
+            }
+
+    def _load_ml_rank_model(self) -> LinearRankModel | None:
+        path = Path(self.settings.storage.root_dir) / "calibration" / "ml_rank_model_latest.json"
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                return None
+            return LinearRankModel.from_payload(payload)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            logger.warning("Failed to load ML rank model from %s: %s", path, exc)
+            return None
+
+    def _label_for_regime_score(self, score: float) -> str:
+        if score >= self.settings.scoring.regime_switching.bull_threshold:
+            return "bull"
+        if score <= self.settings.scoring.regime_switching.bear_threshold:
+            return "bear"
+        return "neutral"
 
     def _compute_features(
         self, snapshots: list[StockSnapshot], regime_score: float
