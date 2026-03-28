@@ -14,6 +14,10 @@ Commands
         Example:
             python main.py analyze RELIANCE
             python main.py analyze TCS
+
+    python main.py invalidation
+        Evaluate open broker positions for stop-loss/thesis/time invalidation
+        and write date-stamped reports under data/signals.
 """
 
 from __future__ import annotations
@@ -21,7 +25,8 @@ from __future__ import annotations
 import argparse
 import json
 
-from stock_screener_engine.app import run_screen, run_single_stock
+from stock_screener_engine.app import run_live_invalidation_daily, run_screen, run_single_stock
+from stock_screener_engine.config.settings import load_settings
 
 
 def _json_default(obj: object) -> str:
@@ -37,21 +42,27 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
     subparsers.required = True
 
-    # ── screen ──────────────────────────────────────────────────────────────
+    # -- screen -------------------------------------------------------------
     subparsers.add_parser(
         "screen",
         help="Run full market screening (daily + intraday) across the universe.",
     )
 
-    # ── analyze ─────────────────────────────────────────────────────────────
+    # -- analyze ------------------------------------------------------------
     analyze_parser = subparsers.add_parser(
         "analyze",
-        help="Deep single-stock analysis.  Example: python main.py analyze RELIANCE",
+        help="Deep single-stock analysis. Example: python main.py analyze RELIANCE",
     )
     analyze_parser.add_argument(
         "symbol",
         type=str,
         help="NSE ticker symbol, e.g. RELIANCE, TCS, INFY",
+    )
+
+    # -- invalidation -------------------------------------------------------
+    subparsers.add_parser(
+        "invalidation",
+        help="Run daily live invalidation checks on open broker positions.",
     )
 
     args = parser.parse_args()
@@ -62,6 +73,11 @@ def main() -> None:
 
     elif args.command == "analyze":
         result = run_single_stock(args.symbol.strip().upper())
+        print(json.dumps(result, indent=2, default=_json_default))
+
+    elif args.command == "invalidation":
+        settings = load_settings()
+        result = run_live_invalidation_daily(settings)
         print(json.dumps(result, indent=2, default=_json_default))
 
 

@@ -25,9 +25,10 @@ class LiveInvalidationPipeline:
         latest_price_by_symbol: dict[str, float],
         thesis_flags_by_symbol: dict[str, list[str]] | None = None,
         as_of: date | None = None,
-        run_label: str = "latest",
+        run_label: str | None = None,
     ) -> dict:
         as_of = as_of or date.today()
+        run_label = run_label or as_of.isoformat()
         thesis_flags_by_symbol = thesis_flags_by_symbol or {}
 
         decisions = []

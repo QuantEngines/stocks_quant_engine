@@ -10,7 +10,6 @@ from stock_screener_engine.config.startup_validation import validate_startup_set
 from stock_screener_engine.data_sources.broker.factory import build_broker_adapters
 from stock_screener_engine.data_sources.filings.null_filings_provider import NullFilingsProvider
 from stock_screener_engine.data_sources.filings.filings_adapter import FilingsAdapter
-from stock_screener_engine.data_sources.market.yfinance_market_data_provider import YFinanceMarketDataProvider
 from stock_screener_engine.data_sources.news.generic_news_adapter import GenericNewsAdapter
 from stock_screener_engine.data_sources.news.free_news_provider import FreeRSSNewsProvider
 from stock_screener_engine.data_sources.transcripts.null_transcripts import NullTranscriptProvider
@@ -27,7 +26,7 @@ from stock_screener_engine.nlp.ingestion.document_ingestor import TextDocumentIn
 from stock_screener_engine.nlp.ingestion.health_reporting import IngestionHealthSink
 from stock_screener_engine.pipelines.daily_batch import DailyBatchPipeline
 from stock_screener_engine.pipelines.intraday_update import IntradayUpdatePipeline
-from stock_screener_engine.pipelines.single_stock_deep import SingleStockPipeline
+from stock_screener_engine.pipelines.live_invalidation_daily import run_live_invalidation_daily_job
 
 
 def configure_logging(level: str) -> None:
@@ -68,6 +67,17 @@ def run_intraday(settings: AppSettings) -> dict[str, list]:
         text_pipeline=text_pipeline,
     )
     return pipeline.run()
+
+
+def run_live_invalidation_daily(settings: AppSettings) -> dict[str, object]:
+    """Run live invalidation on currently open broker positions.
+
+    Reports are persisted as date-stamped JSON and CSV under `data/signals`.
+    """
+    validate_startup_settings(settings)
+    configure_logging(settings.log_level)
+
+    return run_live_invalidation_daily_job(settings)
 
 
 def summarize_brokers(settings: AppSettings) -> dict[str, bool]:
@@ -164,6 +174,7 @@ def run_single_stock(
     nlp_on = replace(settings.nlp, enabled=True)
     settings_for_nlp = replace(settings, nlp=nlp_on)
     text_pipeline = _build_text_pipeline(settings_for_nlp, text)
+    from stock_screener_engine.pipelines.single_stock_deep import SingleStockPipeline
 
     pipeline = SingleStockPipeline(
         settings=settings_for_nlp,
@@ -174,10 +185,12 @@ def run_single_stock(
     return pipeline.run(symbol)
 
 
-def _build_market_provider(settings: AppSettings) -> YFinanceMarketDataProvider:
+def _build_market_provider(settings: AppSettings):
     provider = settings.runtime_data.market_provider.strip().lower()
     if provider not in {"yfinance", "nse_http", "nse"}:
         raise ValueError(f"Unsupported market provider: {settings.runtime_data.market_provider}")
+    from stock_screener_engine.data_sources.market.yfinance_market_data_provider import YFinanceMarketDataProvider
+
     return YFinanceMarketDataProvider(universe=settings.runtime_data.market_universe)
 
 
