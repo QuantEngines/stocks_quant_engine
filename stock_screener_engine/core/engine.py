@@ -137,8 +137,11 @@ class ResearchEngine:
         self.quality = DataQualityChecker()
 
     def run(self, symbols: list[str] | None = None, regime_score: float | None = None) -> dict[str, list]:
+        run_at = datetime.utcnow().isoformat() + "Z"
         symbols = symbols or self.market_data.get_universe()
+        symbols_requested = len(symbols)
         snapshots = self.market_data.get_snapshots(symbols)
+        as_of = max(s.as_of for s in snapshots).isoformat() if snapshots else None
 
         if regime_score is None:
             regime_snapshot = self._detect_regime_snapshot(snapshots)
@@ -157,7 +160,9 @@ class ResearchEngine:
             logger.warning("Snapshot quality issues: %s", snapshot_quality.issues)
 
         selected = self.universe_selector.select(snapshots)
+        symbols_selected = len(selected)
         features, sector_map, text_feature_rows = self._compute_features(selected, regime_score=regime_score)
+        symbols_with_features = len(features)
 
         feature_quality = self.quality.validate_features(features)
         if not feature_quality.passed:
@@ -264,20 +269,38 @@ class ResearchEngine:
         ml_long_ranked: list[ScoreCard] = []
         ml_swing_ranked: list[ScoreCard] = []
         model = self._load_ml_rank_model()
+        ml_model_loaded = model is not None
         if model is not None:
             ml_ranked = model.rank({fv.symbol: dict(fv.values) for fv in features})
             ml_by_symbol = {symbol: score for symbol, score in ml_ranked}
             ml_long_ranked = sorted(
                 score_cards,
-                key=lambda c: (ml_by_symbol.get(c.symbol, float("-inf")), c.symbol),
+                key=lambda c: (ml_by_symbol.get(c.symbol, float("-inf")), c.long_term_score),
                 reverse=True,
             )
-            ml_swing_ranked = list(ml_long_ranked)
+            ml_swing_ranked = sorted(
+                score_cards,
+                key=lambda c: (ml_by_symbol.get(c.symbol, float("-inf")), c.swing_score),
+                reverse=True,
+            )
+
+        nlp_summary = self._build_nlp_summary(text_feature_rows, sector_map)
 
         return {
+            "run_at": run_at,
+            "as_of": as_of,
+            "symbols_requested": symbols_requested,
+            "symbols_selected": symbols_selected,
+            "symbols_with_features": symbols_with_features,
+            "ml_model_loaded": ml_model_loaded,
+            "quality_flags": {
+                "snapshot": {"passed": snapshot_quality.passed, "issues": snapshot_quality.issues},
+                "features": {"passed": feature_quality.passed, "issues": feature_quality.issues},
+            },
             "regime_snapshot": regime_snapshot,
             "features": features,
             "text_features": text_feature_rows,
+            "nlp_summary": nlp_summary,
             "scores": score_cards,
             "long_ranked": rank_by_long_term(score_cards),
             "swing_ranked": rank_by_swing(score_cards),
@@ -294,6 +317,15 @@ class ResearchEngine:
             "long_portfolio_rejected": long_portfolio_rejected,
             "swing_portfolio_positions": swing_portfolio_positions,
             "swing_portfolio_rejected": swing_portfolio_rejected,
+            "signal_summary": {
+                "regime": regime_snapshot["label"],
+                "total_long": len(long_sorted),
+                "total_swing": len(swing_sorted),
+                "total_short": len(short_sorted),
+                "top_long_count": len(top_long),
+                "top_swing_count": len(top_swing),
+                "top_short_count": len(top_short),
+            },
         }
 
     def _detect_regime_snapshot(self, snapshots: list[StockSnapshot]) -> dict[str, float | str]:
@@ -327,6 +359,52 @@ class ResearchEngine:
                 "realized_volatility": 0.0,
                 "breadth": 0.5,
             }
+
+    def _build_nlp_summary(
+        self,
+        text_feature_rows: list[dict[str, float | str]],
+        sector_map: dict[str, str],
+    ) -> dict:
+        if not text_feature_rows:
+            return {"symbols_with_nlp": 0}
+
+        scores_by_symbol: dict[str, float] = {
+            str(row["symbol"]): float(row["sentiment_score_recent"])
+            for row in text_feature_rows
+            if "symbol" in row and "sentiment_score_recent" in row
+        }
+
+        sentiments = list(scores_by_symbol.values())
+        avg_sentiment = sum(sentiments) / len(sentiments) if sentiments else 0.0
+
+        sector_buckets: dict[str, list[float]] = {}
+        for sym, score in scores_by_symbol.items():
+            sector = sector_map.get(sym, "unknown")
+            sector_buckets.setdefault(sector, []).append(score)
+        sector_avg = {
+            sector: round(sum(vals) / len(vals), 4)
+            for sector, vals in sector_buckets.items()
+        }
+
+        bullish = sorted(
+            [(sym, s) for sym, s in scores_by_symbol.items() if s > 0.6],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        bearish = sorted(
+            [(sym, s) for sym, s in scores_by_symbol.items() if s < 0.4],
+            key=lambda x: x[1],
+        )
+
+        return {
+            "symbols_with_nlp": len(text_feature_rows),
+            "avg_sentiment": round(avg_sentiment, 4),
+            "bullish_count": len(bullish),
+            "bearish_count": len(bearish),
+            "top_bullish": [sym for sym, _ in bullish[:5]],
+            "top_bearish": [sym for sym, _ in bearish[:5]],
+            "sector_avg_sentiment": sector_avg,
+        }
 
     def _load_ml_rank_model(self) -> LinearRankModel | None:
         path = Path(self.settings.storage.root_dir) / "calibration" / "ml_rank_model_latest.json"
