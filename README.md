@@ -119,6 +119,30 @@ data_sources/
   - `features (symbol, as_of)` — composite PK, upsert safe
   - `scores (symbol, as_of)` — composite PK, upsert safe
   - `signals (symbol, category, run_date)` — composite PK, **no duplicate rows on re-run**
+- `MarketDataStore` — canonical security master, market calendar, OHLCV bars, and corporate actions:
+  - `security_master (symbol, exchange)` — canonical identifiers and sector/industry tags
+  - `market_calendar (venue, session_date)` — trading/holiday/special-session state
+  - `ohlcv_bars (venue, symbol, ts, interval)` — queryable market history
+  - `corporate_actions` — split/bonus/dividend action records with adjustment support
+- `SQLiteMarketDataProvider` — research-facing canonical provider:
+  - reads stored security master and OHLCV directly into scans/deep dives
+  - uses adjusted history for features/backtests and unadjusted latest close for executable snapshots
+  - emits freshness warnings or hard failures depending on canonical freshness settings
+- `financial_statements` + `SQLiteFinancialsProvider` — point-in-time fundamentals:
+  - stores period-end and filing-date aware financial statement rows
+  - prefers four-quarter TTM when available, with annual fallback
+  - computes ROE, ROCE, margins, leverage, cash-flow conversion, and YoY growth
+  - computes PE/PB only when point-in-time market-cap data is available
+  - supplies same-sector canonical peer context for sector-relative PE/PB z-scores
+- `PeerComparisonBuilder` — sector-relative research ranking:
+  - ranks valuation, quality, growth, balance-sheet risk, and composite peer position
+  - powers `peer-report`, deep-dive peer sections, and sector peer leader views
+- `equity_valuations` — point-in-time market-cap/share-count facts for valuation:
+  - `as_of`, `market_cap`, `shares_outstanding`, free-float market cap, enterprise value
+  - financial values should use the same currency/unit scale as statement rows
+- `shareholding_patterns` — point-in-time ownership and governance facts:
+  - promoter, FII, DII, and public holding percentages by period-end and filing date
+  - drives promoter change, institutional ownership, and governance proxy features
 
 ### Portfolio Construction Adapter
 - Deterministic post-ranking adapter (`execution/portfolio_adapter.py`)
@@ -194,12 +218,11 @@ stock_screener_engine/
     protocols.py      ScorerProtocol
     long_term_model.py  LongTermModel.with_weights(...)
     swing_model.py    SwingModel.with_weights(...)
-  pipelines/          daily_batch, feature_refresh, intraday_update, signal_generation
+  pipelines/          data_collection, daily_batch, feature_refresh, intraday_update, signal_generation
   storage/            local_files, sqlite_store (dedup-safe)
   execution/          order abstraction, execution router
   backtest/           cross_sectional, walk_forward, event_study scaffolds
   monitoring/         data_quality, health, signal_drift
-docs/                 architecture, setup, extension guide
 examples/             run_demo.py
 tests/
   conftest.py         shared fixtures (AppSettings, FeatureVector, snapshots, ScoreCard)
@@ -225,6 +248,9 @@ python -m venv .venv && source .venv/bin/activate
 # 2. Install the package in editable mode
 pip install -e .
 
+# Optional: Yahoo Finance and broker SDK data sources
+pip install -e ".[market,broker]"
+
 # 3. Optionally copy the env template
 cp .env.example .env
 
@@ -236,6 +262,7 @@ Demo writes outputs under `data/`:
 ```
 data/features/      feature vectors (CSV/JSON)
 data/signals/       signal results
+data/quality/       pipeline quality reports
 data/metadata.db    SQLite — features, scores, signals tables
 ```
 
@@ -256,8 +283,12 @@ All settings are overridable with environment variables:
 | `SSE_ENABLE_ZERODHA` | `false` | Enable Zerodha broker |
 | `SSE_ENABLE_BREEZE` | `false` | Enable Breeze broker |
 | `SSE_MIN_LIQUIDITY` | `1000000` | Volume filter threshold |
-| `SSE_MARKET_PROVIDER` | `nse_http` | Market data provider |
+| `SSE_MARKET_PROVIDER` | `nse_http` | Market data provider (`canonical`, `nse_http`, `yfinance`, `zerodha`, `icici_breeze`, `mock`) |
+| `SSE_FINANCIALS_PROVIDER` | `none` | Financials provider (`none`, `canonical`, `mock`); canonical is auto-used for canonical market scans |
 | `SSE_NEWS_PROVIDER` | `free_rss` | News source provider |
+| `SSE_CANONICAL_ADJUSTED_HISTORY` | `true` | Use split/bonus-adjusted stored bars for historical features |
+| `SSE_CANONICAL_STRICT_FRESHNESS` | `false` | Block scans when canonical bars are stale instead of warning |
+| `SSE_CANONICAL_MAX_STALENESS_DAYS` | `3` | Maximum allowed canonical bar staleness in strict mode |
 | `SSE_LLM_PROVIDER` | `heuristic` | LLM backend (`heuristic`, `openai`, `anthropic`) |
 | `SSE_LLM_API_KEY_ENV` | `OPENAI_API_KEY` | Env var name that stores LLM API key |
 | `SSE_LLM_AUDIT_PATH` | `./data` | Root path for low-confidence LLM audit logs |
@@ -334,12 +365,19 @@ Each report includes per-adapter and source-level (`news`, `filings`) fetch coun
 
 ### Free News Sources
 
-Deployment defaults use free, public RSS ingestion (no paid key required):
+Deployment defaults use free/public sources where possible:
 
+- NSE public HTTP endpoints for OHLCV (`nse_http`)
 - Google News RSS search feeds per symbol (`free_rss` provider)
 - Exchange announcements for filing-like event ingestion
 
 This keeps the runtime disconnected from mock sources while preserving deterministic fallback behavior for LLM extraction.
+
+Yahoo Finance is available through `SSE_MARKET_PROVIDER=yfinance` after installing
+the `market` extra. Zerodha Kite and ICICI Breeze can also be used as alternate
+market data sources with `SSE_MARKET_PROVIDER=zerodha` or
+`SSE_MARKET_PROVIDER=icici_breeze` after installing the `broker` extra and
+setting the corresponding credentials.
 
 ---
 
@@ -351,6 +389,19 @@ This keeps the runtime disconnected from mock sources while preserving determini
 | `IntradayUpdatePipeline` | During market hours | Refresh swing-sensitive stack |
 | `FeatureRefreshPipeline` | On-demand | Recompute features only |
 | `SignalGenerationPipeline` | On-demand | Regenerate signals from cached features |
+| `DataCollectionPipeline` | Scheduled / on-demand | Canonical exchange OHLCV/events/shareholding collection |
+| `DataFoundationPipeline` | Scheduled / on-demand | Persist security master, calendar, OHLCV, corporate actions, quality and source reconciliation |
+| `DocumentIntelligencePipeline` | On-demand | Local PDF/text document parsing, section detection, fact extraction |
+
+### Intelligence Engines
+
+| Engine | Module | Current status |
+|---|---|---|
+| Stock Signal Engine | `core/`, `pipelines/`, `reporting/` | Implemented with professional JSON/table/Markdown reports |
+| Company Deep-Dive Research Engine | `research/company_deepdive/` | Report assembly implemented; peer/segment detail expands as data improves |
+| PDF / Document Intelligence Engine | `documents/`, `pipelines/document_pipeline.py` | Text/PDF loader, sections, facts, commentary, quality warnings |
+| Sector Intelligence Engine | `sector/` | Sector scoring, stance, drivers, risks, best expressions |
+| Evaluation Engine | `backtest/evaluation.py` | Unified facade over cross-sectional and sector/document diagnostics |
 
 ---
 
@@ -361,6 +412,7 @@ are absent.
 
 **Zerodha (Kite):**
 ```
+SSE_MARKET_PROVIDER=zerodha
 SSE_ENABLE_ZERODHA=true
 SSE_ZERODHA_API_KEY=...
 SSE_ZERODHA_API_SECRET=...
@@ -369,6 +421,7 @@ SSE_ZERODHA_ACCESS_TOKEN=...
 
 **ICICI Breeze:**
 ```
+SSE_MARKET_PROVIDER=icici_breeze
 SSE_ENABLE_BREEZE=true
 SSE_BREEZE_API_KEY=...
 SSE_BREEZE_API_SECRET=...
@@ -404,6 +457,74 @@ python examples/llm_event_intelligence_demo.py
 # run tests
 pytest -q
 ```
+
+## CLI Commands
+
+After `pip install -e .`, the `stock-engine` command is available:
+
+```bash
+stock-engine scan --mode full --format json
+stock-engine scan --mode swing --format table
+stock-engine scan --source canonical --mode full --format table
+stock-engine analyze RELIANCE
+stock-engine deepdive RELIANCE --format markdown
+stock-engine document-ingest --symbol RELIANCE --file annual_report.pdf --document-type annual_report
+stock-engine sector-rankings --format markdown
+stock-engine sector-report --sector "CapitalGoods"
+stock-engine sector-report --sector "IT" --include-peers --format markdown
+stock-engine peer-report RELIANCE --as-of 2026-05-01 --format markdown
+stock-engine security-master-ingest --file securities.csv
+stock-engine data-foundation --start 2026-01-01 --end 2026-01-31 --symbols RELIANCE,TCS
+stock-engine data-quality --start 2026-01-01 --end 2026-01-31 --symbols RELIANCE,TCS
+stock-engine financials-ingest --symbol RELIANCE --file financials.csv --as-of 2026-05-01
+stock-engine valuation-ingest --symbol RELIANCE --file valuations.csv --as-of 2026-05-01
+stock-engine shareholding-ingest --symbol RELIANCE --file shareholding.csv --as-of 2026-05-01
+stock-engine explain RELIANCE
+stock-engine export-report RELIANCE --format markdown
+```
+
+Canonical workflow:
+
+```bash
+stock-engine security-master-ingest --file securities.csv
+stock-engine data-foundation --source nse_http --start 2026-01-01 --end 2026-01-31 --symbols RELIANCE,TCS
+stock-engine financials-ingest --symbol RELIANCE --file financials.csv --as-of 2026-05-01
+stock-engine valuation-ingest --symbol RELIANCE --file valuations.csv --as-of 2026-05-01
+stock-engine shareholding-ingest --symbol RELIANCE --file shareholding.csv --as-of 2026-05-01
+stock-engine peer-report RELIANCE --as-of 2026-05-01 --format markdown
+stock-engine scan --source canonical --mode full --format table
+stock-engine analyze RELIANCE --source canonical
+```
+
+Security master CSV columns:
+`symbol, exchange, isin, series, company_name, sector, industry, listing_date, delisting_date, active, lot_size, tick_size, source`.
+
+Financial statement CSV columns:
+`period_end, filing_date, statement_type, revenue, ebit, net_income, operating_cash_flow, capex, total_debt, equity, total_assets, current_assets, current_liabilities, interest_expense, source_id`.
+
+Valuation CSV columns:
+`as_of, market_cap, shares_outstanding, free_float_market_cap, enterprise_value, currency, source_id`.
+
+Shareholding CSV columns:
+`period_end, filing_date, promoter_pct, fii_pct, dii_pct, public_pct, source_id`.
+
+The legacy `python main.py screen` and `python main.py analyze RELIANCE` flows remain available.
+
+## Output Schema
+
+Professional stock signal reports include:
+
+- Identity: symbol, company, sector, industry, market-cap category, liquidity class
+- Signal summary: long-term/swing/final score, risk penalty, confidence, rank, horizon
+- Technical metrics: trend, momentum, relative strength, volatility, volume participation, setup status
+- Fundamental metrics: growth, profitability, leverage, cash-flow quality where available
+- Valuation metrics: PE/PB, sector/history z-score proxies, earnings yield, valuation risk
+- Peer context: sector PE/PB z-score and valuation position versus covered peers
+- Event/NLP metrics: event scores, sentiment, management tone, uncertainty, governance risk
+- Risk metrics: liquidity, volatility, leverage, valuation, earnings, event/governance, missing-data risk
+- Explanation: positive drivers, negative drivers, why selected/rejected, monitorables, invalidation logic
+
+Missing data is explicitly marked as unavailable or included in `missing_data_warnings`; the engine should not invent financials or document facts.
 
 ## Modular Scoring Demo
 

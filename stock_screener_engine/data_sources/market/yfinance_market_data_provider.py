@@ -9,8 +9,6 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Sequence
 
-import yfinance as yf
-
 from stock_screener_engine.core.entities import StockSnapshot
 from stock_screener_engine.data_sources.base.interfaces import MarketDataProvider
 
@@ -36,6 +34,17 @@ def _to_yf_symbol(symbol: str) -> str:
     return symbol + _YF_SUFFIX
 
 
+def _require_yfinance():
+    try:
+        import yfinance as yf  # type: ignore[import-not-found]
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "The yfinance market provider requires the optional 'yfinance' package. "
+            "Install it or set SSE_MARKET_PROVIDER=nse_http, zerodha, or icici_breeze."
+        ) from exc
+    return yf
+
+
 class YFinanceMarketDataProvider(MarketDataProvider):
     """Uses Yahoo Finance for free NSE OHLCV data."""
 
@@ -46,12 +55,13 @@ class YFinanceMarketDataProvider(MarketDataProvider):
         return self._universe[:]
 
     def get_historical(self, symbol: str, interval: str, start: date, end: date) -> list[dict]:
+        yf = _require_yfinance()
         yf_symbol = _to_yf_symbol(symbol)
         ticker = yf.Ticker(yf_symbol)
         df = ticker.history(
             start=start.isoformat(),
             end=(end + timedelta(days=1)).isoformat(),  # end is exclusive in yfinance
-            interval="1d",
+            interval=_yf_interval(interval),
             auto_adjust=True,
         )
         if df.empty:
@@ -79,15 +89,9 @@ class YFinanceMarketDataProvider(MarketDataProvider):
             bars = self.get_historical(symbol=symbol, interval="1d", start=lookback, end=today)
             if not bars:
                 continue
-            closes = [float(r["close"]) for r in bars]
-            vols = [float(r["volume"]) for r in bars]
             last = bars[-1]
             close = float(last["close"])
             volume = float(last["volume"])
-            avg_20 = sum(vols[-20:]) / max(1, min(20, len(vols)))
-            mom = 0.0
-            if len(closes) > 20 and closes[-21] > 0:
-                mom = (closes[-1] - closes[-21]) / closes[-21]
 
             out.append(
                 StockSnapshot(
@@ -97,13 +101,28 @@ class YFinanceMarketDataProvider(MarketDataProvider):
                     close=close,
                     volume=volume,
                     delivery_ratio=0.5,
-                    pe_ratio=15.0,
-                    roe=max(0.02, min(0.35, 0.1 + 0.4 * mom)),
-                    debt_to_equity=max(0.05, min(2.0, 1.0 - mom)),
-                    earnings_growth=max(-0.2, min(0.6, mom)),
-                    free_cash_flow_margin=max(-0.2, min(0.4, (volume / max(1.0, avg_20) - 1.0) * 0.05)),
+                    pe_ratio=0.0,
+                    roe=0.0,
+                    debt_to_equity=0.0,
+                    earnings_growth=0.0,
+                    free_cash_flow_margin=0.0,
                     promoter_holding_change=0.0,
-                    insider_activity_score=max(-1.0, min(1.0, mom * 2.0)),
+                    insider_activity_score=0.0,
                 )
             )
         return out
+
+
+def _yf_interval(interval: str) -> str:
+    mapping = {
+        "1d": "1d",
+        "day": "1d",
+        "1m": "1m",
+        "2m": "2m",
+        "5m": "5m",
+        "15m": "15m",
+        "30m": "30m",
+        "60m": "60m",
+        "1h": "60m",
+    }
+    return mapping.get(interval.lower(), interval)

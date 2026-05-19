@@ -98,3 +98,30 @@ def test_portfolio_adapter_applies_sector_target_weights() -> None:
         by_sector[pos.sector] = by_sector.get(pos.sector, 0.0) + pos.target_weight
 
     assert by_sector["Banking"] > by_sector["IT"]
+
+
+def test_portfolio_adapter_does_not_renormalize_above_single_name_cap() -> None:
+    adapter = PortfolioConstructionAdapter()
+    signals = [
+        _signal("AAA", 90.0, "IT"),
+        _signal("BBB", 80.0, "Banking"),
+        _signal("CCC", 70.0, "Pharma"),
+    ]
+    plan = adapter.construct(
+        ranked_signals=signals,
+        sector_by_symbol={"AAA": "IT", "BBB": "Banking", "CCC": "Pharma"},
+        price_by_symbol={"AAA": 100.0, "BBB": 100.0, "CCC": 100.0},
+        volume_by_symbol={"AAA": 2_000_000.0, "BBB": 2_000_000.0, "CCC": 2_000_000.0},
+        constraints=PortfolioConstraints(
+            max_positions=3,
+            max_sector_positions=3,
+            min_avg_daily_volume=500_000.0,
+            max_single_position_weight=0.12,
+            capital_base=1_000_000.0,
+            min_position_notional=10_000.0,
+        ),
+    )
+
+    assert plan.positions
+    assert all(p.target_weight <= 0.12 for p in plan.positions)
+    assert sum(p.target_weight for p in plan.positions) < 1.0

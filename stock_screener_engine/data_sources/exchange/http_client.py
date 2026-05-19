@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import random
 import time
+import gzip
+import zlib
 from dataclasses import dataclass
 from http.cookiejar import CookieJar
 from typing import Any
@@ -51,7 +53,7 @@ class RetryingHTTPClient:
             ),
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Encoding": "gzip, deflate",
         }
         if headers:
             merged_headers.update(headers)
@@ -87,7 +89,8 @@ class RetryingHTTPClient:
             try:
                 req = Request(url, headers=headers)
                 with self._opener.open(req, timeout=self.retry_config.timeout_seconds) as resp:
-                    body = resp.read().decode("utf-8")
+                    raw = _decode_response_body(resp.read(), resp.headers.get("Content-Encoding", ""))
+                    body = raw.decode("utf-8")
                 parsed = json.loads(body)
                 if not isinstance(parsed, dict):
                     raise json.JSONDecodeError("non-dict payload", body, 0)
@@ -111,3 +114,15 @@ def _host_of(url: str) -> str:
         return url.split("/", maxsplit=1)[0]
     host_part = url[idx + len(marker) :]
     return host_part.split("/", maxsplit=1)[0]
+
+
+def _decode_response_body(raw: bytes, encoding: str) -> bytes:
+    encoding = encoding.lower().strip()
+    if "gzip" in encoding:
+        return gzip.decompress(raw)
+    if "deflate" in encoding:
+        try:
+            return zlib.decompress(raw)
+        except zlib.error:
+            return zlib.decompress(raw, -zlib.MAX_WBITS)
+    return raw

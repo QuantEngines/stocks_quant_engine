@@ -56,15 +56,9 @@ class NSEHTTPMarketDataProvider(MarketDataProvider):
             bars = self.get_historical(symbol=symbol, interval="1d", start=lookback, end=today)
             if not bars:
                 continue
-            closes = [float(r.get("close", 0.0) or 0.0) for r in bars]
-            vols = [float(r.get("volume", 0.0) or 0.0) for r in bars]
             last = bars[-1]
             close = float(last.get("close", 0.0) or 0.0)
             volume = float(last.get("volume", 0.0) or 0.0)
-            avg_20 = sum(vols[-20:]) / max(1, min(20, len(vols)))
-            mom = 0.0
-            if len(closes) > 20 and closes[-21] > 0:
-                mom = (closes[-1] - closes[-21]) / closes[-21]
 
             out.append(
                 StockSnapshot(
@@ -74,13 +68,13 @@ class NSEHTTPMarketDataProvider(MarketDataProvider):
                     close=close,
                     volume=volume,
                     delivery_ratio=0.5,
-                    pe_ratio=15.0,
-                    roe=max(0.02, min(0.35, 0.1 + 0.4 * mom)),
-                    debt_to_equity=max(0.05, min(2.0, 1.0 - mom)),
-                    earnings_growth=max(-0.2, min(0.6, mom)),
-                    free_cash_flow_margin=max(-0.2, min(0.4, (volume / max(1.0, avg_20) - 1.0) * 0.05)),
+                    pe_ratio=0.0,
+                    roe=0.0,
+                    debt_to_equity=0.0,
+                    earnings_growth=0.0,
+                    free_cash_flow_margin=0.0,
                     promoter_holding_change=0.0,
-                    insider_activity_score=max(-1.0, min(1.0, mom * 2.0)),
+                    insider_activity_score=0.0,
                 )
             )
         return out

@@ -13,6 +13,7 @@ from stock_screener_engine.data_sources.base.interfaces import (
 )
 from stock_screener_engine.storage.local_files import LocalFileStorage
 from stock_screener_engine.nlp.event_engine.pipeline import TextIntelligencePipeline
+from stock_screener_engine.pipelines.quality_reporting import build_pipeline_quality_report
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,10 @@ class IntradayUpdatePipeline:
 
     def run(self, symbols: list[str] | None = None) -> dict[str, list]:
         logger.info("Running intraday swing update pipeline")
-        output = self.engine.run(symbols=symbols, regime_score=0.15)
+        output = self.engine.run(symbols=symbols, regime_score=None)
+        quality_report = build_pipeline_quality_report(output, "intraday_update")
+        self.file_store.save_json(quality_report, filename="intraday_quality_report.json", subdir="quality")
+        if not quality_report["passed"]:
+            raise RuntimeError("Intraday update blocked by data quality issues")
         self.file_store.save_signals(output["swing_signals"], filename="intraday_swing_signals.json")
         return output

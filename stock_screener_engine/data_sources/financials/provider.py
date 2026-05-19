@@ -51,10 +51,14 @@ class PointInTimeFinancialsProvider(FinancialsProvider):
         self._store.add(records)
 
     def get_fundamentals(self, symbols: Sequence[str]) -> dict[str, FundamentalsSnapshot]:
-        today = date.today()
+        return self.get_fundamentals_as_of(symbols, as_of=date.today())
+
+    def get_fundamentals_as_of(
+        self, symbols: Sequence[str], as_of: date
+    ) -> dict[str, FundamentalsSnapshot]:
         out: dict[str, FundamentalsSnapshot] = {}
         for symbol in symbols:
-            rec = self._store.latest_as_of(symbol, today)
+            rec = self._store.latest_as_of(symbol, as_of)
             if rec is None:
                 continue
             equity = rec.equity if abs(rec.equity) > 1e-9 else 1.0
@@ -83,10 +87,14 @@ class PointInTimeFinancialsProvider(FinancialsProvider):
         return out
 
     def get_governance(self, symbols: Sequence[str]) -> dict[str, GovernanceSnapshot]:
-        today = date.today()
+        return self.get_governance_as_of(symbols, as_of=date.today())
+
+    def get_governance_as_of(
+        self, symbols: Sequence[str], as_of: date
+    ) -> dict[str, GovernanceSnapshot]:
         out: dict[str, GovernanceSnapshot] = {}
         for symbol in symbols:
-            rec = self._store.latest_as_of(symbol, today)
+            rec = self._store.latest_as_of(symbol, as_of)
             if rec is None:
                 continue
             leverage_score = 1.0 - min(2.0, rec.total_debt / max(1e-9, abs(rec.equity))) / 2.0

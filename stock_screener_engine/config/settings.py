@@ -108,9 +108,28 @@ class LlmSettings:
 class RuntimeDataSettings:
     market_provider: str = "nse_http"
     market_universe: list[str] = field(default_factory=list)
+    financials_provider: str = "none"
     news_provider: str = "free_rss"
     filings_provider: str = "exchange_announcements"
     transcripts_provider: str = "none"
+    canonical_venue: str = "NSE"
+    canonical_adjusted_history: bool = True
+    canonical_strict_freshness: bool = False
+    canonical_max_staleness_days: int = 3
+
+
+@dataclass(frozen=True)
+class DocumentProcessingSettings:
+    enabled: bool = True
+    max_text_chars: int = 250_000
+    min_quality_score: float = 0.30
+
+
+@dataclass(frozen=True)
+class OutputSettings:
+    default_format: str = "json"
+    include_markdown: bool = True
+    include_signal_reports: bool = True
 
 
 @dataclass(frozen=True)
@@ -179,6 +198,8 @@ class AppSettings:
     runtime_data: RuntimeDataSettings
     integrations: IntegrationSettings
     scoring: ScoringSettings
+    documents: DocumentProcessingSettings = DocumentProcessingSettings()
+    output: OutputSettings = OutputSettings()
 
 
 def _to_bool(text: str | None, default: bool) -> bool:
@@ -206,6 +227,8 @@ def load_settings(config_path: str | None = None) -> AppSettings:
     nlp_raw = raw.get("nlp", {})
     llm_raw = raw.get("llm", {})
     runtime_data_raw = raw.get("runtime_data", {})
+    documents_raw = raw.get("documents", {})
+    output_raw = raw.get("output", {})
     scoring_raw = raw.get("scoring", {})
 
     zerodha_raw = integrations_raw.get("zerodha", {})
@@ -257,12 +280,30 @@ def load_settings(config_path: str | None = None) -> AppSettings:
                 os.getenv("SSE_MARKET_UNIVERSE"),
                 runtime_data_raw.get("market_universe", []),
             ),
+            financials_provider=str(
+                os.getenv("SSE_FINANCIALS_PROVIDER", runtime_data_raw.get("financials_provider", "none"))
+            ),
             news_provider=str(os.getenv("SSE_NEWS_PROVIDER", runtime_data_raw.get("news_provider", "free_rss"))),
             filings_provider=str(
                 os.getenv("SSE_FILINGS_PROVIDER", runtime_data_raw.get("filings_provider", "exchange_announcements"))
             ),
             transcripts_provider=str(
                 os.getenv("SSE_TRANSCRIPTS_PROVIDER", runtime_data_raw.get("transcripts_provider", "none"))
+            ),
+            canonical_venue=str(os.getenv("SSE_CANONICAL_VENUE", runtime_data_raw.get("canonical_venue", "NSE"))),
+            canonical_adjusted_history=_to_bool(
+                os.getenv("SSE_CANONICAL_ADJUSTED_HISTORY"),
+                runtime_data_raw.get("canonical_adjusted_history", True),
+            ),
+            canonical_strict_freshness=_to_bool(
+                os.getenv("SSE_CANONICAL_STRICT_FRESHNESS"),
+                runtime_data_raw.get("canonical_strict_freshness", False),
+            ),
+            canonical_max_staleness_days=int(
+                os.getenv(
+                    "SSE_CANONICAL_MAX_STALENESS_DAYS",
+                    str(runtime_data_raw.get("canonical_max_staleness_days", 3)),
+                )
             ),
         ),
         integrations=IntegrationSettings(
@@ -292,6 +333,19 @@ def load_settings(config_path: str | None = None) -> AppSettings:
             swing_regime_profiles=_parse_weight_profiles(scoring_raw.get("swing_regime_profiles", {})),
             calibration_auto_tune=_parse_calibration_auto_tune(scoring_raw.get("calibration_auto_tune", {})),
             ranking=_parse_ranking(scoring_raw.get("ranking", {})),
+        ),
+        documents=DocumentProcessingSettings(
+            enabled=_to_bool(os.getenv("SSE_ENABLE_DOCUMENT_INTELLIGENCE"), documents_raw.get("enabled", True)),
+            max_text_chars=int(os.getenv("SSE_DOCUMENT_MAX_TEXT_CHARS", str(documents_raw.get("max_text_chars", 250_000)))),
+            min_quality_score=float(os.getenv("SSE_DOCUMENT_MIN_QUALITY_SCORE", str(documents_raw.get("min_quality_score", 0.30)))),
+        ),
+        output=OutputSettings(
+            default_format=str(os.getenv("SSE_OUTPUT_FORMAT", output_raw.get("default_format", "json"))),
+            include_markdown=_to_bool(os.getenv("SSE_OUTPUT_INCLUDE_MARKDOWN"), output_raw.get("include_markdown", True)),
+            include_signal_reports=_to_bool(
+                os.getenv("SSE_OUTPUT_INCLUDE_SIGNAL_REPORTS"),
+                output_raw.get("include_signal_reports", True),
+            ),
         ),
     )
 

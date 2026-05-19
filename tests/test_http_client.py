@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import gzip
 from urllib.error import URLError
 
-from stock_screener_engine.data_sources.exchange.http_client import RetryingHTTPClient
+from stock_screener_engine.data_sources.exchange.http_client import RetryingHTTPClient, _decode_response_body
 
 
 class _FakeClient(RetryingHTTPClient):
@@ -23,3 +24,8 @@ def test_fallback_endpoint_used_when_primary_fails() -> None:
     assert out["ok"] is True
     assert any("primary" in call for call in c.calls)
     assert any("fallback" in call for call in c.calls)
+
+
+def test_decode_response_body_handles_gzip() -> None:
+    raw = gzip.compress(b'{"ok":true}')
+    assert _decode_response_body(raw, "gzip") == b'{"ok":true}'

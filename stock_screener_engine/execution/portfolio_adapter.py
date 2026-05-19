@@ -131,34 +131,44 @@ def _cap_weights(weights: list[float], cap: float) -> list[float]:
     if not weights:
         return []
     cap = max(0.01, min(1.0, cap))
-    adjusted = list(weights)
+    if cap * len(weights) < 1.0:
+        return [cap for _ in weights]
 
-    for _ in range(5):
-        overflow = 0.0
-        under_idx: list[int] = []
-        for i, w in enumerate(adjusted):
-            if w > cap:
-                overflow += (w - cap)
-                adjusted[i] = cap
-            else:
-                under_idx.append(i)
+    base = list(weights)
+    total = sum(base)
+    if total <= 1e-12:
+        base = [1.0 / len(weights)] * len(weights)
+    else:
+        base = [w / total for w in base]
 
-        if overflow <= 1e-9 or not under_idx:
+    adjusted = [0.0] * len(base)
+    active = set(range(len(base)))
+    remaining = 1.0
+
+    while active:
+        active_total = sum(base[i] for i in active)
+        if active_total <= 1e-12:
+            even = remaining / len(active)
+            for i in active:
+                adjusted[i] = min(cap, even)
             break
 
-        under_total = sum(adjusted[i] for i in under_idx)
-        if under_total <= 1e-12:
-            even = overflow / len(under_idx)
-            for i in under_idx:
-                adjusted[i] += even
-        else:
-            for i in under_idx:
-                adjusted[i] += overflow * (adjusted[i] / under_total)
+        capped_this_round: set[int] = set()
+        for i in active:
+            candidate = remaining * (base[i] / active_total)
+            if candidate > cap:
+                adjusted[i] = cap
+                capped_this_round.add(i)
 
-    s = sum(adjusted)
-    if s <= 1e-12:
-        return [1.0 / len(adjusted)] * len(adjusted)
-    return [w / s for w in adjusted]
+        if not capped_this_round:
+            for i in active:
+                adjusted[i] = remaining * (base[i] / active_total)
+            break
+
+        remaining -= cap * len(capped_this_round)
+        active -= capped_this_round
+
+    return adjusted
 
 
 def _apply_sector_targets(

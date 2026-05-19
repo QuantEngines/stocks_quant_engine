@@ -60,7 +60,7 @@ def run_live_invalidation_daily_job(
             if price <= 0.0:
                 price = extract_quote_price(quotes.get(signal.symbol, {}))
             latest_price_by_symbol[signal.symbol] = price
-            thesis_flags_by_symbol[signal.symbol] = extract_thesis_flags(row)
+            thesis_flags_by_symbol[signal.symbol] = extract_active_thesis_flags(row)
 
     payload = invalidation.run(
         active_signals=active_signals,
@@ -124,7 +124,7 @@ def position_to_active_signal(position: dict) -> ActiveSignal | None:
         entered_on=entered_on,
         stop_loss_pct=max(0.0, stop_loss_pct),
         max_holding_days=max(1, max_holding_days),
-        required_thesis_flags=extract_thesis_flags(position),
+        required_thesis_flags=extract_required_thesis_flags(position),
     )
 
 
@@ -136,8 +136,26 @@ def extract_quote_price(quote: dict) -> float:
     return extract_float(quote, "ltp", "last_price", "price", "close", default=0.0)
 
 
+def extract_required_thesis_flags(position: dict) -> list[str]:
+    raw = position.get("required_thesis_flags") or position.get("thesis_flags") or []
+    return _parse_flag_list(raw)
+
+
+def extract_active_thesis_flags(position: dict) -> list[str]:
+    raw = (
+        position.get("active_thesis_flags")
+        or position.get("current_thesis_flags")
+        or position.get("confirmed_thesis_flags")
+        or []
+    )
+    return _parse_flag_list(raw)
+
+
 def extract_thesis_flags(position: dict) -> list[str]:
-    raw = position.get("thesis_flags") or position.get("required_thesis_flags") or []
+    return extract_required_thesis_flags(position)
+
+
+def _parse_flag_list(raw: object) -> list[str]:
     if isinstance(raw, list):
         return [str(x) for x in raw if str(x).strip()]
     if isinstance(raw, str) and raw.strip():

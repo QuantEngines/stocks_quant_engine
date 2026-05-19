@@ -13,6 +13,7 @@ from stock_screener_engine.data_sources.base.interfaces import (
 )
 from stock_screener_engine.storage.local_files import LocalFileStorage
 from stock_screener_engine.storage.sqlite_store import SQLiteStore
+from stock_screener_engine.pipelines.quality_reporting import build_pipeline_quality_report
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,11 @@ class FeatureRefreshPipeline:
 
     def run(self, symbols: list[str] | None = None) -> list:
         logger.info("Refreshing feature store")
-        output = self.engine.run(symbols=symbols, regime_score=0.2)
+        output = self.engine.run(symbols=symbols, regime_score=None)
+        quality_report = build_pipeline_quality_report(output, "feature_refresh")
+        self.file_store.save_json(quality_report, filename="feature_refresh_quality_report.json", subdir="quality")
+        if not quality_report["passed"]:
+            raise RuntimeError("Feature refresh blocked by data quality issues")
         features = output["features"]
         self.file_store.save_features(features, filename="refreshed_features.csv")
         self.sqlite.upsert_features(features)

@@ -64,12 +64,11 @@ class ShortScorer:
         trend_break = clamp(1.0 - fa.get("trend_strength", 0.5))
         mom_break   = clamp(1.0 - fa.get("momentum_strength", 0.5))
         rel_weak    = clamp(1.0 - fa.get("relative_strength_proxy", 0.5))
-        # volatility_regime being low means compression before a breakdown; high = already volatile
-        # We want high-downside-vol (high volatility_regime with bearish context)
-        vol         = clamp(fa.get("volatility_regime", 0.0))
+        # Low volatility_regime means noisy/high-ATR conditions in the feature engine.
+        vol_break   = clamp(1.0 - fa.get("volatility_regime", 0.5))
         # delivery_ratio_signal low = more speculative / churning = bearish
         del_break   = clamp(1.0 - fa.get("delivery_ratio_signal", 0.5))
-        score = clamp(0.30 * trend_break + 0.30 * mom_break + 0.20 * rel_weak + 0.10 * vol + 0.10 * del_break)
+        score = clamp(0.30 * trend_break + 0.30 * mom_break + 0.20 * rel_weak + 0.10 * vol_break + 0.10 * del_break)
         return CategoryScore(
             name="technical_breakdown",
             score_0_1=score,
@@ -84,7 +83,7 @@ class ShortScorer:
         profit_weak  = clamp(1.0 - fa.get("profitability_quality", 0.5))
         bs_weak      = clamp(1.0 - fa.get("balance_sheet_health", 0.5))
         cf_weak      = clamp(1.0 - fa.get("cash_flow_quality", 0.5))
-        leverage_bad = clamp(fa.get("leverage_trend", 0.5))        # high leverage = bearish
+        leverage_bad = clamp(1.0 - fa.get("leverage_trend", 0.5))
         earn_unstab  = clamp(1.0 - fa.get("earnings_stability", 0.5))
         score = clamp(
             0.20 * growth_weak + 0.20 * profit_weak + 0.20 * bs_weak
@@ -122,11 +121,11 @@ class ShortScorer:
 
     def _risk_amplifiers(self, fa: FeatureAccessor) -> CategoryScore:
         # High risk factors that accelerate downside moves
-        liq_risk      = clamp(fa.get("liquidity_risk",            0.0))
-        lever_risk     = clamp(fa.get("leverage_risk",             0.0))
-        earn_risk      = clamp(fa.get("earnings_instability_risk", 0.0))
-        event_unc_risk = clamp(fa.get("event_uncertainty_risk",    0.0))
-        gov_risk       = clamp(fa.get("governance_risk",           0.0))
+        liq_risk      = clamp(fa.get("liquidity_risk", 1.0 - fa.get("volume_confirmation", 0.5)))
+        lever_risk     = clamp(fa.get("leverage_risk", 1.0 - fa.get("balance_sheet_health", 0.5)))
+        earn_risk      = clamp(fa.get("earnings_instability_risk", 1.0 - fa.get("earnings_stability", 0.5)))
+        event_unc_risk = clamp(fa.get("event_uncertainty_risk", fa.get("uncertainty_penalty", 0.0)))
+        gov_risk       = clamp(fa.get("governance_risk", fa.get("governance_flag_score", 0.0)))
         score = clamp(
             0.25 * liq_risk + 0.25 * lever_risk + 0.20 * earn_risk
             + 0.15 * event_unc_risk + 0.15 * gov_risk

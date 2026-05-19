@@ -106,6 +106,16 @@ def test_configurable_swing_weights_change_score() -> None:
     assert no_catalyst_card.swing_score < default_card.swing_score
 
 
+def test_swing_catalyst_component_is_split_not_double_counted() -> None:
+    fv = _rich_fv()
+    score, components = SwingScorer().score(fv)
+
+    assert 0.0 <= score <= 100.0
+    assert components["event_catalyst"] > 0.0
+    assert components["sentiment_score"] > 0.0
+    assert sum(components.values()) <= 100.0
+
+
 def test_from_dict_weights() -> None:
     weights = LongTermWeights.from_dict({"growth_quality": 25.0})
     assert weights.growth_quality == 25.0

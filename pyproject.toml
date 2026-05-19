@@ -13,8 +13,30 @@ dependencies = [
   "PyYAML>=6.0",
 ]
 
+[project.scripts]
+stock-engine = "stock_screener_engine.interfaces.cli.main:main"
+
 [project.optional-dependencies]
+market = [
+  "yfinance>=0.2.40",
+]
+broker = [
+  "kiteconnect>=5.0.0",
+  "breeze-connect>=1.0.60",
+]
+documents = [
+  "pypdf>=4.0.0",
+]
 dev = [
+  "pytest>=8.0",
+  "ruff>=0.5.0",
+  "mypy>=1.10.0",
+]
+all = [
+  "yfinance>=0.2.40",
+  "kiteconnect>=5.0.0",
+  "breeze-connect>=1.0.60",
+  "pypdf>=4.0.0",
   "pytest>=8.0",
   "ruff>=0.5.0",
   "mypy>=1.10.0",

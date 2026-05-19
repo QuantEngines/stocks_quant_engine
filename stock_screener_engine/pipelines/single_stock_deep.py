@@ -11,13 +11,12 @@ import logging
 from datetime import date, timedelta
 from typing import Sequence
 
-import yfinance as yf
-
 from stock_screener_engine.config.settings import AppSettings
 from stock_screener_engine.core.engine import ResearchEngine
 from stock_screener_engine.core.entities import StockSnapshot
 from stock_screener_engine.core.technical_indicators import atr, adx, momentum
 from stock_screener_engine.data_sources.base.interfaces import (
+    FinancialsProvider,
     MarketDataProvider,
     TextEventProvider,
 )
@@ -92,6 +91,8 @@ def _macd(closes: list[float]) -> dict[str, float | None]:
 def _fetch_yf_info(symbol: str) -> dict:
     """Fetch fundamental and identity metadata from Yahoo Finance."""
     try:
+        import yfinance as yf  # type: ignore[import-not-found]
+
         info = yf.Ticker(_to_yf_symbol(symbol)).info
         roe_raw = info.get("returnOnEquity")
         de_raw = info.get("debtToEquity")
@@ -118,6 +119,9 @@ def _fetch_yf_info(symbol: str) -> dict:
             "eps": info.get("trailingEps"),
             "beta": info.get("beta"),
         }
+    except ModuleNotFoundError:
+        logger.info("yfinance is not installed; single-stock fundamental enrichment disabled")
+        return {}
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not fetch yfinance info for %s: %s", symbol, exc)
         return {}
@@ -133,10 +137,6 @@ def _build_enriched_snapshot(
     """Build a StockSnapshot using real yfinance fundamentals where available."""
     close = closes[-1] if closes else 0.0
     volume = vols[-1] if vols else 0.0
-    avg_20 = sum(vols[-20:]) / max(1, min(20, len(vols))) if vols else 1.0
-    mom = 0.0
-    if len(closes) > 20 and closes[-21] > 0:
-        mom = (closes[-1] - closes[-21]) / closes[-21]
 
     return StockSnapshot(
         symbol=symbol,
@@ -145,11 +145,11 @@ def _build_enriched_snapshot(
         close=close,
         volume=volume,
         delivery_ratio=0.5,
-        pe_ratio=float(yf_info["pe_ratio"]) if yf_info.get("pe_ratio") else 15.0,
-        roe=float(yf_info["roe"]) if yf_info.get("roe") else max(0.02, min(0.35, 0.1 + 0.4 * mom)),
-        debt_to_equity=float(yf_info["debt_to_equity"]) if yf_info.get("debt_to_equity") else max(0.05, min(2.0, 1.0 - mom)),
-        earnings_growth=float(yf_info["earnings_growth"]) if yf_info.get("earnings_growth") else max(-0.2, min(0.6, mom)),
-        free_cash_flow_margin=float(yf_info["free_cash_flow_margin"]) if yf_info.get("free_cash_flow_margin") else max(-0.2, min(0.4, (volume / max(1.0, avg_20) - 1.0) * 0.05)),
+        pe_ratio=float(yf_info["pe_ratio"]) if yf_info.get("pe_ratio") else 0.0,
+        roe=float(yf_info["roe"]) if yf_info.get("roe") else 0.0,
+        debt_to_equity=float(yf_info["debt_to_equity"]) if yf_info.get("debt_to_equity") else 0.0,
+        earnings_growth=float(yf_info["earnings_growth"]) if yf_info.get("earnings_growth") else 0.0,
+        free_cash_flow_margin=float(yf_info["free_cash_flow_margin"]) if yf_info.get("free_cash_flow_margin") else 0.0,
         promoter_holding_change=0.0,
         insider_activity_score=0.0,
     )
@@ -496,11 +496,13 @@ class SingleStockPipeline:
         settings: AppSettings,
         market_data: MarketDataProvider,
         text_data: TextEventProvider,
+        financials: FinancialsProvider | None = None,
         text_pipeline: TextIntelligencePipeline | None = None,
     ) -> None:
         self.settings = settings
         self.market_data = market_data
         self.text_data = text_data
+        self.financials = financials
         self.text_pipeline = text_pipeline
 
     def run(self, symbol: str) -> dict[str, object]:
@@ -532,9 +534,10 @@ class SingleStockPipeline:
             settings=self.settings,
             market_data=patched_provider,
             text_data=self.text_data,
+            financials=self.financials,
             text_pipeline=self.text_pipeline,
         )
-        raw = engine.run(symbols=[symbol], regime_score=0.25)
+        raw = engine.run(symbols=[symbol], regime_score=None)
 
         # ── 5. Extract core outputs ───────────────────────────────────────
         features_vec  = raw["features"][0]  if raw.get("features")      else None

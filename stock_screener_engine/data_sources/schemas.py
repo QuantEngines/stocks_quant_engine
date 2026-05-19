@@ -24,6 +24,32 @@ class OHLCVBar:
 
 
 @dataclass(frozen=True)
+class SecurityMasterRecord:
+    symbol: str
+    isin: str = ""
+    exchange: str = "NSE"
+    series: str = "EQ"
+    company_name: str = ""
+    sector: str = "Unknown"
+    industry: str = "Unknown"
+    listing_date: date | None = None
+    delisting_date: date | None = None
+    active: bool = True
+    lot_size: int = 1
+    tick_size: float = 0.05
+    source: str = "manual"
+
+
+@dataclass(frozen=True)
+class MarketSessionRecord:
+    venue: str
+    session_date: date
+    is_trading_day: bool
+    session_type: str = "regular"
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class CorporateActionRecord:
     venue: str
     symbol: str
@@ -78,6 +104,19 @@ class FinancialStatementRecord:
     current_assets: float
     current_liabilities: float
     interest_expense: float
+    source_id: str = ""
+
+
+@dataclass(frozen=True)
+class EquityValuationRecord:
+    venue: str
+    symbol: str
+    as_of: date
+    market_cap: float
+    shares_outstanding: float = 0.0
+    free_float_market_cap: float = 0.0
+    enterprise_value: float = 0.0
+    currency: str = "INR"
     source_id: str = ""
 
 

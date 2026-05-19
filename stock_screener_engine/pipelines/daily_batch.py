@@ -14,6 +14,7 @@ from stock_screener_engine.data_sources.base.interfaces import (
 from stock_screener_engine.storage.local_files import LocalFileStorage
 from stock_screener_engine.storage.sqlite_store import SQLiteStore
 from stock_screener_engine.nlp.event_engine.pipeline import TextIntelligencePipeline
+from stock_screener_engine.pipelines.quality_reporting import build_pipeline_quality_report
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,11 @@ class DailyBatchPipeline:
 
     def run(self, symbols: list[str] | None = None) -> dict[str, list]:
         logger.info("Running daily batch pipeline")
-        output = self.engine.run(symbols=symbols, regime_score=0.25)
+        output = self.engine.run(symbols=symbols, regime_score=None)
+        quality_report = build_pipeline_quality_report(output, "daily_batch")
+        self.file_store.save_json(quality_report, filename="daily_quality_report.json", subdir="quality")
+        if not quality_report["passed"]:
+            raise RuntimeError("Daily batch blocked by data quality issues")
 
         self.file_store.save_features(output["features"], filename="daily_features.csv")
         self.file_store.save_signals(output["long_signals"], filename="daily_long_signals.json")

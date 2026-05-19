@@ -20,6 +20,7 @@ class _DummyBroker:
                 "ltp": 89.0,
                 "entry_date": (date.today() - timedelta(days=2)).isoformat(),
                 "thesis_flags": ["earnings_momentum"],
+                "active_thesis_flags": ["earnings_momentum"],
             },
             {
                 "symbol": "BBB",
@@ -52,3 +53,33 @@ def test_run_live_invalidation_daily_writes_dated_reports(tmp_path) -> None:
     csv_path = tmp_path / "signals" / f"live_invalidation_{date_label}.csv"
     assert json_path.exists()
     assert csv_path.exists()
+
+
+def test_run_live_invalidation_daily_checks_required_vs_active_thesis_flags(tmp_path) -> None:
+    settings = load_settings()
+    settings = replace(
+        settings,
+        storage=StorageSettings(
+            root_dir=str(tmp_path),
+            sqlite_path=str(tmp_path / "metadata.db"),
+        ),
+    )
+
+    class _ThesisBreakBroker(_DummyBroker):
+        def get_positions(self) -> list[dict]:
+            return [
+                {
+                    "symbol": "AAA",
+                    "quantity": 10,
+                    "avg_price": 100.0,
+                    "ltp": 101.0,
+                    "entry_date": date.today().isoformat(),
+                    "required_thesis_flags": ["earnings_momentum"],
+                    "active_thesis_flags": [],
+                }
+            ]
+
+    out = run_live_invalidation_daily_job(settings, adapters={"dummy": _ThesisBreakBroker()})
+    rows = out["report"]["rows"]
+    assert rows[0]["invalidated"] is True
+    assert any("thesis flags missing" in reason for reason in rows[0]["reasons"])

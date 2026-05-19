@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from stock_screener_engine.config.settings import AppSettings
@@ -155,16 +155,25 @@ class ResearchEngine:
                 "breadth": 0.5,
             }
 
-        snapshot_quality = self.quality.validate_snapshots(snapshots)
+        snapshot_reference_date = max((s.as_of for s in snapshots), default=datetime.utcnow().date())
+        snapshot_quality = self.quality.validate_snapshots(
+            snapshots,
+            requested_symbols=symbols,
+            reference_date=snapshot_reference_date,
+        )
         if not snapshot_quality.passed:
             logger.warning("Snapshot quality issues: %s", snapshot_quality.issues)
+        freshness_quality = self._provider_freshness_report(symbols)
 
         selected = self.universe_selector.select(snapshots)
         symbols_selected = len(selected)
         features, sector_map, text_feature_rows = self._compute_features(selected, regime_score=regime_score)
         symbols_with_features = len(features)
 
-        feature_quality = self.quality.validate_features(features)
+        feature_quality = self.quality.validate_features(
+            features,
+            expected_symbols=[s.symbol for s in selected],
+        )
         if not feature_quality.passed:
             logger.warning("Feature quality issues: %s", feature_quality.issues)
 
@@ -286,6 +295,13 @@ class ResearchEngine:
 
         nlp_summary = self._build_nlp_summary(text_feature_rows, sector_map)
 
+        quality_flags = {
+            "snapshot": snapshot_quality.to_dict(),
+            "features": feature_quality.to_dict(),
+        }
+        if freshness_quality is not None:
+            quality_flags["freshness"] = freshness_quality
+
         return {
             "run_at": run_at,
             "as_of": as_of,
@@ -293,10 +309,7 @@ class ResearchEngine:
             "symbols_selected": symbols_selected,
             "symbols_with_features": symbols_with_features,
             "ml_model_loaded": ml_model_loaded,
-            "quality_flags": {
-                "snapshot": {"passed": snapshot_quality.passed, "issues": snapshot_quality.issues},
-                "features": {"passed": feature_quality.passed, "issues": feature_quality.issues},
-            },
+            "quality_flags": quality_flags,
             "regime_snapshot": regime_snapshot,
             "features": features,
             "text_features": text_feature_rows,
@@ -360,6 +373,22 @@ class ResearchEngine:
                 "breadth": 0.5,
             }
 
+    def _provider_freshness_report(self, symbols: list[str]) -> dict[str, object] | None:
+        reporter = getattr(self.market_data, "get_freshness_report", None)
+        if not callable(reporter):
+            return None
+        try:
+            report = reporter(symbols=symbols)
+            return report if isinstance(report, dict) else None
+        except Exception as exc:  # pragma: no cover - defensive telemetry path
+            logger.warning("Market provider freshness check failed: %s", exc)
+            return {
+                "passed": False,
+                "issues": [f"Market provider freshness check failed: {exc}"],
+                "warnings": [],
+                "metrics": {},
+            }
+
     def _build_nlp_summary(
         self,
         text_feature_rows: list[dict[str, float | str]],
@@ -419,6 +448,28 @@ class ResearchEngine:
             logger.warning("Failed to load ML rank model from %s: %s", path, exc)
             return None
 
+    def _peer_valuation_context(self, sectors: set[str], as_of: date) -> dict[str, dict[str, object]]:
+        if self.financials is None:
+            return {}
+        peer_loader = getattr(self.financials, "get_peer_context_as_of", None)
+        if not callable(peer_loader):
+            return {}
+        requested_sectors = sorted(
+            {
+                sector.strip()
+                for sector in sectors
+                if sector and sector.strip() and sector.strip().lower() != "unknown"
+            }
+        )
+        if not requested_sectors:
+            return {}
+        try:
+            peer_context = peer_loader(requested_sectors, as_of=as_of)
+        except Exception as exc:  # pragma: no cover - defensive optional-provider path
+            logger.warning("Peer valuation context unavailable: %s", exc)
+            return {}
+        return peer_context if isinstance(peer_context, dict) else {}
+
     def _label_for_regime_score(self, score: float) -> str:
         if score >= self.settings.scoring.regime_switching.bull_threshold:
             return "bull"
@@ -433,20 +484,49 @@ class ResearchEngine:
         sector_map: dict[str, str] = {s.symbol: s.sector for s in snapshots}
         fundamental_map: dict[str, FundamentalsSnapshot] = {}
         governance_map: dict[str, GovernanceSnapshot] = {}
+        as_of = max((s.as_of for s in snapshots), default=datetime.utcnow().date())
         if self.financials is not None:
             symbols = [s.symbol for s in snapshots]
-            fundamental_map = self.financials.get_fundamentals(symbols)
-            governance_map = self.financials.get_governance(symbols)
+            if hasattr(self.financials, "get_fundamentals_as_of"):
+                fundamental_map = self.financials.get_fundamentals_as_of(symbols, as_of=as_of)  # type: ignore[attr-defined]
+            else:
+                fundamental_map = self.financials.get_fundamentals(symbols)
+            if hasattr(self.financials, "get_governance_as_of"):
+                governance_map = self.financials.get_governance_as_of(symbols, as_of=as_of)  # type: ignore[attr-defined]
+            else:
+                governance_map = self.financials.get_governance(symbols)
 
         pe_by_symbol: dict[str, float] = {}
         pb_by_symbol: dict[str, float] = {}
         for snap in snapshots:
             fin = fundamental_map.get(snap.symbol)
-            pe_by_symbol[snap.symbol] = fin.pe_ratio if fin is not None else snap.pe_ratio
-            pb_by_symbol[snap.symbol] = fin.pb_ratio if fin is not None else 0.0
+            if fin is not None:
+                pe_by_symbol[snap.symbol] = fin.pe_ratio
+                pb_by_symbol[snap.symbol] = fin.pb_ratio
+            elif _snapshot_has_fundamental_data(snap):
+                pe_by_symbol[snap.symbol] = snap.pe_ratio
+                pb_by_symbol[snap.symbol] = 0.0
+            else:
+                pe_by_symbol[snap.symbol] = 0.0
+                pb_by_symbol[snap.symbol] = 0.0
+
+        valuation_sector_map = dict(sector_map)
+        peer_context = self._peer_valuation_context(set(sector_map.values()), as_of=as_of)
+        for symbol, row in peer_context.items():
+            if not isinstance(row, dict):
+                continue
+            sector = str(row.get("sector") or "").strip()
+            fundamentals = row.get("fundamentals")
+            if not sector or not isinstance(fundamentals, FundamentalsSnapshot):
+                continue
+            valuation_sector_map.setdefault(symbol, sector)
+            if fundamentals.pe_ratio > 0:
+                pe_by_symbol.setdefault(symbol, fundamentals.pe_ratio)
+            if fundamentals.pb_ratio > 0:
+                pb_by_symbol.setdefault(symbol, fundamentals.pb_ratio)
 
         valuation_context = self.valuation_normalizer.normalize(
-            sector_by_symbol=sector_map,
+            sector_by_symbol=valuation_sector_map,
             pe_by_symbol=pe_by_symbol,
             pb_by_symbol=pb_by_symbol,
         )
@@ -474,7 +554,16 @@ class ResearchEngine:
             bars = self.market_data.get_historical(snap.symbol, interval="1d", start=start, end=end)
             index_bars = self.market_data.get_historical("^NSEI", interval="1d", start=start, end=end)
 
-            if self.financials is None:
+            market = MarketSnapshot(
+                symbol=snap.symbol,
+                as_of=snap.as_of,
+                sector=snap.sector,
+                close=snap.close,
+                volume=snap.volume,
+                delivery_ratio=snap.delivery_ratio,
+            )
+
+            if self.financials is None and _snapshot_has_fundamental_data(snap):
                 vector = self.feature_engine.compute_from_snapshot(
                     snapshot=snap,
                     historical_bars=bars,
@@ -486,14 +575,6 @@ class ResearchEngine:
                     text_feature_values=self.text_feature_integration.merge(snap.symbol, text_feature_map),
                 )
             else:
-                market = MarketSnapshot(
-                    symbol=snap.symbol,
-                    as_of=snap.as_of,
-                    sector=snap.sector,
-                    close=snap.close,
-                    volume=snap.volume,
-                    delivery_ratio=snap.delivery_ratio,
-                )
                 vector = self.feature_engine.compute(
                     market=market,
                     fundamentals=fundamental_map.get(snap.symbol),
@@ -542,3 +623,18 @@ class ResearchEngine:
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             logger.warning("Failed to apply calibration auto-tune priors: %s", exc)
             return None
+
+
+def _snapshot_has_fundamental_data(snapshot: StockSnapshot) -> bool:
+    return any(
+        abs(float(value)) > 1e-12
+        for value in (
+            snapshot.pe_ratio,
+            snapshot.roe,
+            snapshot.debt_to_equity,
+            snapshot.earnings_growth,
+            snapshot.free_cash_flow_margin,
+            snapshot.promoter_holding_change,
+            snapshot.insider_activity_score,
+        )
+    )

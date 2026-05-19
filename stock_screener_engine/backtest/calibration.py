@@ -42,10 +42,12 @@ class CalibrationDatasetBuilder:
         rows: list[CalibrationRow] = []
         for (as_of, symbol), score in scores_by_date_symbol.items():
             hmap = {
-                h: float(returns_by_date_symbol_horizon.get((as_of, symbol, h), 0.0))
+                h: float(returns_by_date_symbol_horizon[(as_of, symbol, h)])
                 for h in horizons
+                if (as_of, symbol, h) in returns_by_date_symbol_horizon
             }
-            rows.append(CalibrationRow(as_of=as_of, symbol=symbol, score=float(score), returns=hmap))
+            if hmap:
+                rows.append(CalibrationRow(as_of=as_of, symbol=symbol, score=float(score), returns=hmap))
         rows.sort(key=lambda r: (r.as_of, r.symbol))
         return rows
 
@@ -65,14 +67,15 @@ class ModelCalibrator:
             top_sets: list[set[str]] = []
             for as_of in sorted(by_date.keys()):
                 panel = by_date[as_of]
-                if len(panel) < 5:
+                horizon_panel = [r for r in panel if h in r.returns]
+                if len(horizon_panel) < 5:
                     continue
-                preds = [r.score for r in panel]
-                rets = [r.returns.get(h, 0.0) for r in panel]
+                preds = [r.score for r in horizon_panel]
+                rets = [r.returns[h] for r in horizon_panel]
                 day_ics.append(_spearman(preds, rets))
 
-                q = max(1, len(panel) // 5)
-                top = sorted(panel, key=lambda r: r.score, reverse=True)[:q]
+                q = max(1, len(horizon_panel) // 5)
+                top = sorted(horizon_panel, key=lambda r: r.score, reverse=True)[:q]
                 top_sets.append({r.symbol for r in top})
 
             quantile_ic[h] = sum(day_ics) / len(day_ics) if day_ics else 0.0

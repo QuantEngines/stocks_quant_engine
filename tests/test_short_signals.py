@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from datetime import date
 
-import pytest
-
 from stock_screener_engine.core.scoring_short import ShortScorer
 from stock_screener_engine.core.entities import FeatureVector
 from stock_screener_engine.core.signals import SignalGenerator
@@ -33,7 +31,8 @@ BEARISH_FEATURES = {
     "uncertainty_penalty": 0.80,
     "governance_flag_score": 0.75,
     "recent_negative_event_score": 0.80,
-    "leverage_trend": 0.90,
+    "leverage_trend": 0.10,
+    "volatility_regime": 0.15,
     "sentiment_score_recent": 0.05,
 }
 
@@ -50,7 +49,8 @@ BULLISH_FEATURES = {
     "uncertainty_penalty": 0.05,
     "governance_flag_score": 0.05,
     "recent_negative_event_score": 0.05,
-    "leverage_trend": 0.10,
+    "leverage_trend": 0.90,
+    "volatility_regime": 0.80,
     "sentiment_score_recent": 0.85,
 }
 

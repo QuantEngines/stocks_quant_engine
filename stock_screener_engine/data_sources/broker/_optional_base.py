@@ -18,6 +18,14 @@ class OptionalBrokerAdapterBase(BrokerAdapter):
         required = all(self._credentials.values())
         return self._enabled and required
 
+    @property
+    def broker_name(self) -> str:
+        return self._broker_name
+
+    @property
+    def credentials(self) -> dict[str, str | None]:
+        return dict(self._credentials)
+
     def _guard(self) -> None:
         if not self.is_enabled():
             raise RuntimeError(

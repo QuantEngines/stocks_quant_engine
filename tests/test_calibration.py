@@ -55,6 +55,19 @@ def test_perfect_rank_order_gives_positive_ic() -> None:
     assert report.quantile_ic[1] > 0.9
 
 
+def test_calibration_builder_does_not_fill_missing_returns_with_zero() -> None:
+    rows = CalibrationDatasetBuilder().build(
+        scores_by_date_symbol={
+            ("2025-01-01", "A"): 0.1,
+            ("2025-01-01", "B"): 0.2,
+        },
+        returns_by_date_symbol_horizon={("2025-01-01", "A", 1): 0.01},
+        horizons=[1],
+    )
+
+    assert [row.symbol for row in rows] == ["A"]
+
+
 def test_weight_prior_auto_tuner_preserves_totals() -> None:
     builder = CalibrationDatasetBuilder()
     calibrator = ModelCalibrator()

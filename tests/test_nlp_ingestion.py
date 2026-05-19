@@ -37,3 +37,21 @@ def test_ingestion_writes_health_report(tmp_path) -> None:
     content = files[0].read_text(encoding="utf-8")
     assert '"news"' in content
     assert '"filings"' in content
+
+
+def test_ingestion_continues_when_adapter_fails() -> None:
+    class _FailingAdapter:
+        def fetch_documents(self, symbols, lookback_days):  # noqa: ANN001
+            raise RuntimeError("source down")
+
+    ingestor = TextDocumentIngestor(
+        adapters=[
+            _FailingAdapter(),
+            GenericNewsAdapter(MockNewsProvider()),
+        ]
+    )
+
+    docs = ingestor.ingest(symbols=["RELIANCE"], lookback_days=10)
+
+    assert docs
+    assert any(d.source.value == "news" for d in docs)

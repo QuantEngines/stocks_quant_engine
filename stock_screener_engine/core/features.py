@@ -261,9 +261,15 @@ class FeatureEngine:
             return {FEAT_GOVERNANCE_PROXY: 0.0}
         holding_signal = _clamp((g.promoter_holding_change_qoq + 0.1) / 0.2)
         insider_signal = _clamp((g.insider_activity_score + 1.0) / 2.0)
-        audit_penalty = 0.0 if g.audit_opinion == "clean" else (
-            0.3 if g.audit_opinion == "qualified" else 1.0
-        )
+        audit_opinion = g.audit_opinion.strip().lower()
+        if audit_opinion == "clean":
+            audit_penalty = 0.0
+        elif audit_opinion == "qualified":
+            audit_penalty = 0.3
+        elif audit_opinion == "unknown":
+            audit_penalty = 0.15
+        else:
+            audit_penalty = 1.0
         combined = (holding_signal * 0.5 + insider_signal * 0.5) * (1.0 - audit_penalty)
         return {FEAT_GOVERNANCE_PROXY: _clamp(combined)}
 

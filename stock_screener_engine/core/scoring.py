@@ -133,6 +133,7 @@ class SwingScorer:
 
     def score(self, fv: FeatureVector) -> tuple[float, dict[str, float]]:
         effective = self._weights_for_regime(fv.values.get("market_regime_score", 0.0))
+        catalyst_weight = effective.event_catalyst + effective.sentiment_score
         internal = SwingTradeScorer(
             weights=SwingCategoryWeights(
                 trend=effective.trend_strength,
@@ -140,18 +141,21 @@ class SwingScorer:
                 volume_participation=effective.volume_confirmation,
                 volatility_regime=effective.volatility_regime,
                 setup_quality=effective.relative_strength_proxy,
-                catalyst_awareness=(effective.event_catalyst + effective.sentiment_score) / 2.0,
+                catalyst_awareness=catalyst_weight,
             )
         )
         result = internal.score(fv.values)
+        catalyst_component = result.component_map.get("catalyst_awareness", 0.0)
+        event_share = effective.event_catalyst / catalyst_weight if catalyst_weight > 0 else 0.0
+        sentiment_share = effective.sentiment_score / catalyst_weight if catalyst_weight > 0 else 0.0
         components = {
             "trend_strength": result.component_map.get("trend", 0.0),
             "momentum_strength": result.component_map.get("momentum", 0.0),
             "relative_strength_proxy": result.component_map.get("setup_quality", 0.0),
             "volatility_regime": result.component_map.get("volatility_regime", 0.0),
             "volume_confirmation": result.component_map.get("volume_participation", 0.0),
-            "event_catalyst": result.component_map.get("catalyst_awareness", 0.0),
-            "sentiment_score": result.component_map.get("catalyst_awareness", 0.0),
+            "event_catalyst": catalyst_component * event_share,
+            "sentiment_score": catalyst_component * sentiment_share,
         }
         return _clamp_0_100(sum(components.values())), components
 

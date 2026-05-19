@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from time import perf_counter
 
@@ -11,6 +12,8 @@ from stock_screener_engine.nlp.ingestion.health_reporting import (
     infer_source_kind,
 )
 from stock_screener_engine.nlp.schemas.events import NormalizedDocument
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -32,9 +35,9 @@ class TextDocumentIngestor:
                     try:
                         rows = fetch(symbols, lookback_days)
                         documents.extend(rows)
-                    except Exception:
+                    except Exception as exc:  # noqa: BLE001
                         failed = True
-                        raise
+                        logger.warning("Text adapter %s failed; continuing without its documents: %s", name, exc)
                     finally:
                         elapsed_ms = (perf_counter() - started) * 1000.0
                         adapter_stats.append(

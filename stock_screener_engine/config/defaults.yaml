@@ -28,7 +28,7 @@ llm:
   audit_low_confidence: true
   audit_path: ./data
 runtime_data:
-  market_provider: yfinance
+  market_provider: nse_http
   market_universe:
     - RELIANCE
     - TCS
@@ -40,9 +40,22 @@ runtime_data:
     - ITC
     - HINDUNILVR
     - BHARTIARTL
+  financials_provider: none
   news_provider: free_rss
   filings_provider: exchange_announcements
   transcripts_provider: none
+  canonical_venue: NSE
+  canonical_adjusted_history: true
+  canonical_strict_freshness: false
+  canonical_max_staleness_days: 3
+documents:
+  enabled: true
+  max_text_chars: 250000
+  min_quality_score: 0.30
+output:
+  default_format: json
+  include_markdown: true
+  include_signal_reports: true
 integrations:
   zerodha:
     enabled: false
