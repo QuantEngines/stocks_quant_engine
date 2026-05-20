@@ -15,6 +15,8 @@ from stock_screener_engine.app import (
     run_deepdive_report,
     run_document_ingest,
     run_engine_backtest,
+    run_factor_ingest,
+    run_factor_template,
     run_financials_ingest,
     run_peer_report,
     run_screen,
@@ -166,6 +168,21 @@ def main(argv: list[str] | None = None) -> None:
     shareholding.add_argument("--file", required=True)
     shareholding.add_argument("--as-of", required=True, help="Point-in-time cutoff YYYY-MM-DD")
     shareholding.add_argument("--venue", default=None)
+
+    factor_template = subparsers.add_parser("factor-template", help="Create external PIT factor CSV templates")
+    factor_template.add_argument("--output-root", required=True)
+    factor_template.add_argument("--as-of", required=True, help="Template valuation as-of date YYYY-MM-DD")
+    factor_template.add_argument("--symbols", default="", help="Comma-separated symbol override")
+    factor_template.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
+    factor_template.add_argument("--overwrite", action="store_true")
+
+    factor_ingest = subparsers.add_parser("factor-ingest", help="Bulk ingest external PIT factor CSV files")
+    factor_ingest.add_argument("--root", required=True)
+    factor_ingest.add_argument("--as-of", required=True, help="Point-in-time cutoff YYYY-MM-DD")
+    factor_ingest.add_argument("--symbols", default="", help="Comma-separated symbol override")
+    factor_ingest.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
+    factor_ingest.add_argument("--venue", default=None)
+    factor_ingest.add_argument("--min-coverage", type=float, default=1.0)
 
     explain = subparsers.add_parser("explain", help="Explain one stock's current signal")
     explain.add_argument("symbol")
@@ -395,6 +412,31 @@ def main(argv: list[str] | None = None) -> None:
             as_of=date.fromisoformat(args.as_of),
             config_path=config_path,
             venue=args.venue,
+        )
+        _emit(result)
+        return
+
+    if args.command == "factor-template":
+        result = run_factor_template(
+            output_root=args.output_root,
+            as_of=date.fromisoformat(args.as_of),
+            symbols=_parse_symbols(args.symbols),
+            universe_file=args.universe_file,
+            config_path=config_path,
+            overwrite=args.overwrite,
+        )
+        _emit(result)
+        return
+
+    if args.command == "factor-ingest":
+        result = run_factor_ingest(
+            root=args.root,
+            as_of=date.fromisoformat(args.as_of),
+            symbols=_parse_symbols(args.symbols),
+            universe_file=args.universe_file,
+            config_path=config_path,
+            venue=args.venue,
+            min_coverage=args.min_coverage,
         )
         _emit(result)
         return

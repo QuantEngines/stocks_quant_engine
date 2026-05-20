@@ -497,6 +497,8 @@ stock-engine engine-backtest --lookback-years 5 --universe-file "$SSE_STORAGE_RO
 stock-engine financials-ingest --symbol RELIANCE --file financials.csv --as-of 2026-05-01
 stock-engine valuation-ingest --symbol RELIANCE --file valuations.csv --as-of 2026-05-01
 stock-engine shareholding-ingest --symbol RELIANCE --file shareholding.csv --as-of 2026-05-01
+stock-engine factor-template --output-root "$SSE_STORAGE_ROOT/factors/nifty50" --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --as-of 2026-05-18
+stock-engine factor-ingest --root "$SSE_STORAGE_ROOT/factors/nifty50" --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --as-of 2026-05-18 --min-coverage 0.8
 stock-engine explain RELIANCE
 stock-engine export-report RELIANCE --format markdown
 ```
@@ -513,6 +515,8 @@ stock-engine engine-backtest --lookback-years 5 --universe-file "$SSE_STORAGE_RO
 stock-engine financials-ingest --symbol RELIANCE --file financials.csv --as-of 2026-05-01
 stock-engine valuation-ingest --symbol RELIANCE --file valuations.csv --as-of 2026-05-01
 stock-engine shareholding-ingest --symbol RELIANCE --file shareholding.csv --as-of 2026-05-01
+stock-engine factor-template --output-root "$SSE_STORAGE_ROOT/factors/nifty50" --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --as-of 2026-05-18
+stock-engine factor-ingest --root "$SSE_STORAGE_ROOT/factors/nifty50" --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --as-of 2026-05-18 --min-coverage 0.8
 stock-engine peer-report RELIANCE --as-of 2026-05-01 --format markdown
 stock-engine scan --source canonical --mode full --format table
 stock-engine analyze RELIANCE --source canonical
@@ -568,6 +572,33 @@ Valuation CSV columns:
 
 Shareholding CSV columns:
 `period_end, filing_date, promoter_pct, fii_pct, dii_pct, public_pct, source_id`.
+
+For universe-scale point-in-time factor loading, prefer the bulk external
+workflow:
+
+```bash
+stock-engine factor-template \
+  --output-root "$SSE_STORAGE_ROOT/factors/nifty50" \
+  --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" \
+  --as-of 2026-05-18
+
+# Fill the generated CSVs from licensed/vendor/filing-derived sources, then:
+stock-engine factor-ingest \
+  --root "$SSE_STORAGE_ROOT/factors/nifty50" \
+  --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" \
+  --as-of 2026-05-18 \
+  --min-coverage 0.8
+```
+
+The generated files are:
+
+- `financials.csv`: symbol-level statement rows with period-end and filing-date.
+- `valuations.csv`: market-cap/share-count/enterprise-value facts by as-of date.
+- `shareholding.csv`: promoter/FII/DII/public ownership by period-end and filing-date.
+
+`factor-ingest` writes a coverage report under the external storage root and
+blocks the report-level `passed` flag unless financial, valuation, and
+shareholding coverage meet `--min-coverage`.
 
 The legacy `python main.py screen` and `python main.py analyze RELIANCE` flows remain available.
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date
 
 from stock_screener_engine.app import (
+    run_factor_ingest,
+    run_factor_template,
     run_financials_ingest,
     run_security_master_ingest,
     run_shareholding_ingest,
@@ -318,6 +320,83 @@ def test_run_shareholding_ingest_persists_csv_rows(monkeypatch, tmp_path) -> Non
     assert report["passed"] is True
     assert report["persisted"] == 1
     assert rows[0].promoter_pct == 52.0
+
+
+def test_factor_template_creates_external_bulk_csvs(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("SSE_STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setenv("SSE_SQLITE_PATH", str(tmp_path / "market.db"))
+    output_root = tmp_path / "factors" / "nifty50"
+
+    report = run_factor_template(
+        output_root=str(output_root),
+        symbols=["AAA", "BBB"],
+        as_of=date(2026, 5, 1),
+    )
+
+    assert report["symbols"] == 2
+    assert (output_root / "financials.csv").exists()
+    assert (output_root / "valuations.csv").exists()
+    assert (output_root / "shareholding.csv").exists()
+    assert "AAA" in (output_root / "financials.csv").read_text(encoding="utf-8")
+
+
+def test_factor_ingest_persists_bulk_pit_factors(monkeypatch, tmp_path) -> None:
+    factor_root = tmp_path / "factor_input"
+    factor_root.mkdir()
+    (factor_root / "financials.csv").write_text(
+        "\n".join(
+            [
+                "symbol,period_end,filing_date,statement_type,revenue,ebit,net_income,operating_cash_flow,capex,total_debt,equity,total_assets,current_assets,current_liabilities,interest_expense,source_id",
+                "AAA,2026-03-31,2026-04-20,annual,1200,250,180,240,50,200,720,1700,650,340,25,fy26",
+                "BBB,2026-03-31,2026-04-20,annual,900,160,110,130,30,180,500,1200,420,250,18,fy26",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (factor_root / "valuations.csv").write_text(
+        "\n".join(
+            [
+                "symbol,as_of,market_cap,shares_outstanding,free_float_market_cap,enterprise_value,currency,source_id",
+                "AAA,2026-04-30,13200,100,9000,14000,INR,mcap",
+                "BBB,2026-04-30,8800,100,6000,9000,INR,mcap",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (factor_root / "shareholding.csv").write_text(
+        "\n".join(
+            [
+                "symbol,period_end,filing_date,promoter_pct,fii_pct,dii_pct,public_pct,source_id",
+                "AAA,2026-03-31,2026-04-20,52,11,16,21,q4",
+                "BBB,2026-03-31,2026-04-20,45,15,20,20,q4",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SSE_STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setenv("SSE_SQLITE_PATH", str(tmp_path / "market.db"))
+
+    report = run_factor_ingest(
+        root=str(factor_root),
+        symbols=["AAA", "BBB"],
+        as_of=date(2026, 5, 1),
+        min_coverage=1.0,
+    )
+
+    store = MarketDataStore(str(tmp_path / "market.db"))
+    try:
+        financials = store.financial_statement_coverage(["AAA", "BBB"], as_of=date(2026, 5, 1), venue="NSE")
+        valuations = store.equity_valuation_coverage(["AAA", "BBB"], as_of=date(2026, 5, 1), venue="NSE")
+        shareholding = store.shareholding_coverage(["AAA", "BBB"], as_of=date(2026, 5, 1), venue="NSE")
+    finally:
+        store.close()
+
+    assert report["passed"] is True
+    assert report["financials"]["persisted"] == 2
+    assert financials["coverage"] == 1.0
+    assert valuations["coverage"] == 1.0
+    assert shareholding["coverage"] == 1.0
+    assert (tmp_path / "quality" / "factor_bootstrap_ingest_report.json").exists()
 
 
 def test_run_security_master_ingest_persists_csv_rows(monkeypatch, tmp_path) -> None:

@@ -37,6 +37,7 @@ from stock_screener_engine.pipelines.backtest_dataset import BacktestDatasetPipe
 from stock_screener_engine.pipelines.daily_batch import DailyBatchPipeline
 from stock_screener_engine.pipelines.data_foundation import DataFoundationPipeline
 from stock_screener_engine.pipelines.document_pipeline import DocumentIntelligencePipeline
+from stock_screener_engine.pipelines.factor_bootstrap import FactorBootstrapPipeline
 from stock_screener_engine.pipelines.intraday_update import IntradayUpdatePipeline
 from stock_screener_engine.pipelines.live_invalidation_daily import run_live_invalidation_daily_job
 from stock_screener_engine.reporting.signal_report import (
@@ -911,6 +912,66 @@ def run_shareholding_ingest(
         subdir="quality",
     )
     return report
+
+
+def run_factor_template(
+    output_root: str,
+    as_of: date,
+    symbols: list[str] | None = None,
+    universe_file: str | None = None,
+    config_path: str | None = None,
+    overwrite: bool = False,
+) -> dict[str, object]:
+    """Create external point-in-time factor CSV templates for a universe."""
+    settings = load_settings(config_path=config_path)
+    validate_startup_settings(settings)
+    configure_logging(settings.log_level)
+    resolved_symbols, _ = _resolve_runtime_universe(
+        settings=settings,
+        symbols=symbols,
+        universe_file=universe_file,
+    )
+    pipeline = FactorBootstrapPipeline(settings=settings)
+    try:
+        return pipeline.create_templates(
+            symbols=resolved_symbols,
+            output_root=output_root,
+            as_of=as_of,
+            overwrite=overwrite,
+        )
+    finally:
+        pipeline.close()
+
+
+def run_factor_ingest(
+    root: str,
+    as_of: date,
+    symbols: list[str] | None = None,
+    universe_file: str | None = None,
+    config_path: str | None = None,
+    venue: str | None = None,
+    min_coverage: float = 1.0,
+) -> dict[str, object]:
+    """Bulk ingest external point-in-time financial, valuation, and ownership factors."""
+    settings = load_settings(config_path=config_path)
+    validate_startup_settings(settings)
+    configure_logging(settings.log_level)
+    resolved_symbols, _ = _resolve_runtime_universe(
+        settings=settings,
+        symbols=symbols,
+        universe_file=universe_file,
+    )
+    pipeline = FactorBootstrapPipeline(settings=settings)
+    try:
+        return pipeline.ingest(
+            symbols=resolved_symbols,
+            root=root,
+            as_of=as_of,
+            venue=venue,
+            min_coverage=min_coverage,
+        )
+    finally:
+        pipeline.close()
 
 
 def _build_market_provider(settings: AppSettings):

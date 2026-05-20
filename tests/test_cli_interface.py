@@ -371,3 +371,60 @@ def test_cli_shareholding_ingest_delegates(monkeypatch, capsys) -> None:
 
     assert '"symbol": "AAA"' in out
     assert '"persisted": 1' in out
+
+
+def test_cli_factor_template_delegates(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_factor_template",
+        lambda **kwargs: {
+            "pipeline": "factor_bootstrap_template",
+            "output_root": kwargs["output_root"],
+            "symbols": kwargs["symbols"],
+            "overwrite": kwargs["overwrite"],
+        },
+    )
+
+    cli_main.main([
+        "factor-template",
+        "--output-root",
+        "factor_root",
+        "--as-of",
+        "2026-05-01",
+        "--symbols",
+        "AAA,BBB",
+        "--overwrite",
+    ])
+    out = capsys.readouterr().out
+
+    assert '"pipeline": "factor_bootstrap_template"' in out
+    assert '"AAA"' in out
+    assert '"overwrite": true' in out
+
+
+def test_cli_factor_ingest_delegates(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_factor_ingest",
+        lambda **kwargs: {
+            "pipeline": "factor_bootstrap_ingest",
+            "root": kwargs["root"],
+            "min_coverage": kwargs["min_coverage"],
+        },
+    )
+
+    cli_main.main([
+        "factor-ingest",
+        "--root",
+        "factor_root",
+        "--as-of",
+        "2026-05-01",
+        "--symbols",
+        "AAA,BBB",
+        "--min-coverage",
+        "0.8",
+    ])
+    out = capsys.readouterr().out
+
+    assert '"pipeline": "factor_bootstrap_ingest"' in out
+    assert '"min_coverage": 0.8' in out
