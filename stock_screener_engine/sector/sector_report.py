@@ -100,11 +100,11 @@ class SectorIntelligenceBuilder:
         )
 
         stance = "overweight" if sector_score >= 70.0 else ("underweight" if sector_score < 45.0 else "neutral")
-        avoid = [
+        avoid = _unique_symbols([
             signal.symbol
             for signal in sorted(long_signals + swing_signals, key=lambda s: s.score)
             if signal.category.endswith("reject")
-        ][:5]
+        ])[:5]
 
         return SectorIntelligenceReport(
             sector=sector,
@@ -127,7 +127,7 @@ class SectorIntelligenceBuilder:
             ][:5],
             avoid_watchlist_stocks=avoid,
             thesis=_sector_thesis(momentum_score, fundamentals_score, valuation_score, event_macro_score),
-            risks=_sector_risks(valuation_score, risk_score, event_macro_score),
+            risks=_sector_risks(fundamentals_score, valuation_score, risk_score, event_macro_score),
             monitorables=[
                 "Sector relative strength versus Nifty",
                 "Breadth: stocks above 50/200 DMA",
@@ -191,8 +191,10 @@ def _sector_thesis(momentum: float, fundamentals: float, valuation: float, event
     return out
 
 
-def _sector_risks(valuation: float, risk: float, event_macro: float) -> list[str]:
+def _sector_risks(fundamentals: float, valuation: float, risk: float, event_macro: float) -> list[str]:
     out: list[str] = []
+    if fundamentals < 20:
+        out.append("fundamental coverage is missing or too sparse for high-conviction sector calls")
     if valuation < 45:
         out.append("valuation risk or lack of valuation support")
     if risk < 55:
@@ -201,4 +203,16 @@ def _sector_risks(valuation: float, risk: float, event_macro: float) -> list[str
         out.append("event, sentiment, or macro/regime backdrop is weak")
     if not out:
         out.append("watch for reversal in breadth, earnings momentum, or policy backdrop")
+    return out
+
+
+def _unique_symbols(symbols: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for symbol in symbols:
+        normalized = symbol.strip().upper()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
     return out

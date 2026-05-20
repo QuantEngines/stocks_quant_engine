@@ -9,10 +9,12 @@ from datetime import date
 from pathlib import Path
 
 from stock_screener_engine.app import (
+    run_backtest_readiness,
     run_data_foundation,
     run_data_quality,
     run_deepdive_report,
     run_document_ingest,
+    run_engine_backtest,
     run_financials_ingest,
     run_peer_report,
     run_screen,
@@ -21,6 +23,8 @@ from stock_screener_engine.app import (
     run_security_master_ingest,
     run_shareholding_ingest,
     run_single_stock,
+    run_forward_return_labels,
+    run_technical_backtest,
     run_valuation_ingest,
 )
 
@@ -73,17 +77,73 @@ def main(argv: list[str] | None = None) -> None:
     doc.add_argument("--document-type", default="unknown")
 
     foundation = subparsers.add_parser("data-foundation", help="Build canonical data foundation store")
-    foundation.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
-    foundation.add_argument("--end", required=True, help="End date YYYY-MM-DD")
+    foundation.add_argument("--start", default=None, help="Start date YYYY-MM-DD")
+    foundation.add_argument("--end", default=None, help="End date YYYY-MM-DD; defaults to today")
+    foundation.add_argument("--lookback-years", type=int, default=None, help="Compute start date from end date")
     foundation.add_argument("--symbols", default="", help="Comma-separated symbol override")
+    foundation.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
     foundation.add_argument("--interval", default="1d")
     _add_source_arg(foundation)
 
     quality = subparsers.add_parser("data-quality", help="Check canonical data quality")
-    quality.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
-    quality.add_argument("--end", required=True, help="End date YYYY-MM-DD")
+    quality.add_argument("--start", default=None, help="Start date YYYY-MM-DD")
+    quality.add_argument("--end", default=None, help="End date YYYY-MM-DD; defaults to today")
+    quality.add_argument("--lookback-years", type=int, default=None, help="Compute start date from end date")
     quality.add_argument("--symbols", default="", help="Comma-separated symbol override")
+    quality.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
     quality.add_argument("--interval", default="1d")
+
+    readiness = subparsers.add_parser("backtest-readiness", help="Check if canonical data is backtest-ready")
+    readiness.add_argument("--start", default=None, help="Start date YYYY-MM-DD")
+    readiness.add_argument("--end", default=None, help="End date YYYY-MM-DD; defaults to today")
+    readiness.add_argument("--lookback-years", type=int, default=5, help="Compute start date from end date")
+    readiness.add_argument("--symbols", default="", help="Comma-separated symbol override")
+    readiness.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
+    readiness.add_argument("--interval", default="1d")
+    readiness.add_argument("--min-history-years", type=float, default=5.0)
+    readiness.add_argument("--min-history-rows", type=int, default=None)
+    readiness.add_argument("--horizons", default="5,20,60", help="Comma-separated forward-return horizons in bars")
+    readiness.add_argument("--require-fundamentals", action="store_true")
+
+    labels = subparsers.add_parser("backtest-labels", help="Generate canonical forward-return labels")
+    labels.add_argument("--start", default=None, help="Start date YYYY-MM-DD")
+    labels.add_argument("--end", default=None, help="End date YYYY-MM-DD; defaults to today")
+    labels.add_argument("--lookback-years", type=int, default=5, help="Compute start date from end date")
+    labels.add_argument("--symbols", default="", help="Comma-separated symbol override")
+    labels.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
+    labels.add_argument("--universe-policy", choices=["current", "eligible_history"], default="current")
+    labels.add_argument("--min-history-rows", type=int, default=1000)
+    labels.add_argument("--horizons", default="5,20,60", help="Comma-separated forward-return horizons in bars")
+    labels.add_argument("--interval", default="1d")
+
+    technical_backtest = subparsers.add_parser("technical-backtest", help="Evaluate first-pass technical ranking")
+    technical_backtest.add_argument("--start", default=None, help="Start date YYYY-MM-DD")
+    technical_backtest.add_argument("--end", default=None, help="End date YYYY-MM-DD; defaults to today")
+    technical_backtest.add_argument("--lookback-years", type=int, default=5, help="Compute start date from end date")
+    technical_backtest.add_argument("--symbols", default="", help="Comma-separated symbol override")
+    technical_backtest.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
+    technical_backtest.add_argument("--universe-policy", choices=["current", "eligible_history"], default="eligible_history")
+    technical_backtest.add_argument("--min-history-rows", type=int, default=1000)
+    technical_backtest.add_argument("--min-lookback", type=int, default=220)
+    technical_backtest.add_argument("--horizons", default="5,20,60", help="Comma-separated forward-return horizons in bars")
+    technical_backtest.add_argument("--interval", default="1d")
+    technical_backtest.add_argument("--round-trip-cost-bps", type=float, default=None)
+    technical_backtest.add_argument("--slippage-bps", type=float, default=5.0)
+
+    engine_backtest = subparsers.add_parser("engine-backtest", help="Evaluate engine scores historically")
+    engine_backtest.add_argument("--start", default=None, help="Start date YYYY-MM-DD")
+    engine_backtest.add_argument("--end", default=None, help="End date YYYY-MM-DD; defaults to today")
+    engine_backtest.add_argument("--lookback-years", type=int, default=5, help="Compute start date from end date")
+    engine_backtest.add_argument("--symbols", default="", help="Comma-separated symbol override")
+    engine_backtest.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
+    engine_backtest.add_argument("--universe-policy", choices=["current", "eligible_history"], default="eligible_history")
+    engine_backtest.add_argument("--score-type", choices=["swing", "long_term", "conviction"], default="swing")
+    engine_backtest.add_argument("--min-history-rows", type=int, default=1000)
+    engine_backtest.add_argument("--min-lookback", type=int, default=220)
+    engine_backtest.add_argument("--horizons", default="5,20,60", help="Comma-separated forward-return horizons in bars")
+    engine_backtest.add_argument("--interval", default="1d")
+    engine_backtest.add_argument("--round-trip-cost-bps", type=float, default=None)
+    engine_backtest.add_argument("--slippage-bps", type=float, default=5.0)
 
     security_master = subparsers.add_parser("security-master-ingest", help="Ingest local CSV security master rows")
     security_master.add_argument("--file", required=True)
@@ -200,23 +260,99 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.command == "data-foundation":
+        start, end = _resolve_date_range(args, parser)
         result = run_data_foundation(
-            start=date.fromisoformat(args.start),
-            end=date.fromisoformat(args.end),
+            start=start,
+            end=end,
             symbols=_parse_symbols(args.symbols),
             config_path=config_path,
             interval=args.interval,
+            universe_file=args.universe_file,
         )
         _emit(result)
         return
 
     if args.command == "data-quality":
+        start, end = _resolve_date_range(args, parser)
         result = run_data_quality(
-            start=date.fromisoformat(args.start),
-            end=date.fromisoformat(args.end),
+            start=start,
+            end=end,
             symbols=_parse_symbols(args.symbols),
             config_path=config_path,
             interval=args.interval,
+            universe_file=args.universe_file,
+        )
+        _emit(result)
+        return
+
+    if args.command == "backtest-readiness":
+        start, end = _resolve_date_range(args, parser)
+        result = run_backtest_readiness(
+            start=start,
+            end=end,
+            symbols=_parse_symbols(args.symbols),
+            config_path=config_path,
+            interval=args.interval,
+            universe_file=args.universe_file,
+            min_history_years=args.min_history_years,
+            min_history_rows=args.min_history_rows,
+            horizons=_parse_int_csv(args.horizons),
+            require_fundamentals=args.require_fundamentals,
+        )
+        _emit(result)
+        return
+
+    if args.command == "backtest-labels":
+        start, end = _resolve_date_range(args, parser)
+        result = run_forward_return_labels(
+            start=start,
+            end=end,
+            symbols=_parse_symbols(args.symbols),
+            config_path=config_path,
+            interval=args.interval,
+            universe_file=args.universe_file,
+            universe_policy=args.universe_policy,
+            min_history_rows=args.min_history_rows,
+            horizons=_parse_int_csv(args.horizons),
+        )
+        _emit(result)
+        return
+
+    if args.command == "technical-backtest":
+        start, end = _resolve_date_range(args, parser)
+        result = run_technical_backtest(
+            start=start,
+            end=end,
+            symbols=_parse_symbols(args.symbols),
+            config_path=config_path,
+            interval=args.interval,
+            universe_file=args.universe_file,
+            universe_policy=args.universe_policy,
+            min_history_rows=args.min_history_rows,
+            min_lookback=args.min_lookback,
+            horizons=_parse_int_csv(args.horizons),
+            round_trip_cost_bps=args.round_trip_cost_bps,
+            slippage_bps=args.slippage_bps,
+        )
+        _emit(result)
+        return
+
+    if args.command == "engine-backtest":
+        start, end = _resolve_date_range(args, parser)
+        result = run_engine_backtest(
+            start=start,
+            end=end,
+            symbols=_parse_symbols(args.symbols),
+            config_path=config_path,
+            interval=args.interval,
+            universe_file=args.universe_file,
+            universe_policy=args.universe_policy,
+            min_history_rows=args.min_history_rows,
+            min_lookback=args.min_lookback,
+            horizons=_parse_int_csv(args.horizons),
+            score_type=args.score_type,
+            round_trip_cost_bps=args.round_trip_cost_bps,
+            slippage_bps=args.slippage_bps,
         )
         _emit(result)
         return
@@ -318,6 +454,28 @@ def _emit(payload: object, fmt: str = "json") -> None:
 def _parse_symbols(text: str) -> list[str] | None:
     values = [part.strip().upper() for part in text.split(",") if part.strip()]
     return values or None
+
+
+def _parse_int_csv(text: str) -> list[int]:
+    values = [int(part.strip()) for part in text.split(",") if part.strip()]
+    return values or [5, 20, 60]
+
+
+def _resolve_date_range(args: argparse.Namespace, parser: argparse.ArgumentParser) -> tuple[date, date]:
+    end = date.fromisoformat(args.end) if getattr(args, "end", None) else date.today()
+    if getattr(args, "start", None):
+        return date.fromisoformat(args.start), end
+    years = getattr(args, "lookback_years", None)
+    if years is None:
+        parser.error("--start or --lookback-years is required")
+    return _years_before(end, int(years)), end
+
+
+def _years_before(end: date, years: int) -> date:
+    try:
+        return end.replace(year=end.year - years)
+    except ValueError:
+        return end.replace(year=end.year - years, day=28)
 
 
 def _add_source_arg(parser: argparse.ArgumentParser) -> None:

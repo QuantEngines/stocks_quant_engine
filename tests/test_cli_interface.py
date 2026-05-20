@@ -121,6 +121,7 @@ def test_cli_data_foundation_delegates(monkeypatch, capsys) -> None:
             "start": kwargs["start"].isoformat(),
             "end": kwargs["end"].isoformat(),
             "symbols": kwargs["symbols"],
+            "universe_file": kwargs["universe_file"],
         },
     )
 
@@ -150,6 +151,130 @@ def test_cli_data_quality_delegates(monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
 
     assert '"coverage": 1.0' in out
+
+
+def test_cli_backtest_readiness_delegates(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_backtest_readiness",
+        lambda **kwargs: {
+            "passed": True,
+            "start": kwargs["start"].isoformat(),
+            "end": kwargs["end"].isoformat(),
+            "horizons": kwargs["horizons"],
+            "min_history_rows": kwargs["min_history_rows"],
+        },
+    )
+
+    cli_main.main([
+        "backtest-readiness",
+        "--end",
+        "2026-05-18",
+        "--lookback-years",
+        "5",
+        "--symbols",
+        "AAA,BBB",
+        "--horizons",
+        "5,20",
+        "--min-history-rows",
+        "1000",
+    ])
+    out = capsys.readouterr().out
+
+    assert '"passed": true' in out
+    assert '"horizons": [' in out
+    assert '"min_history_rows": 1000' in out
+
+
+def test_cli_backtest_labels_delegates(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_forward_return_labels",
+        lambda **kwargs: {
+            "pipeline": "forward_return_labels",
+            "universe_policy": kwargs["universe_policy"],
+            "horizons": kwargs["horizons"],
+        },
+    )
+
+    cli_main.main([
+        "backtest-labels",
+        "--end",
+        "2026-05-18",
+        "--lookback-years",
+        "5",
+        "--symbols",
+        "AAA,BBB",
+        "--universe-policy",
+        "eligible_history",
+        "--horizons",
+        "5,20",
+    ])
+    out = capsys.readouterr().out
+
+    assert '"pipeline": "forward_return_labels"' in out
+    assert '"universe_policy": "eligible_history"' in out
+    assert '"horizons": [' in out
+
+
+def test_cli_technical_backtest_delegates(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_technical_backtest",
+        lambda **kwargs: {
+            "pipeline": "technical_ranking_backtest",
+            "universe_policy": kwargs["universe_policy"],
+            "min_lookback": kwargs["min_lookback"],
+        },
+    )
+
+    cli_main.main([
+        "technical-backtest",
+        "--end",
+        "2026-05-18",
+        "--lookback-years",
+        "5",
+        "--symbols",
+        "AAA,BBB",
+        "--min-lookback",
+        "120",
+    ])
+    out = capsys.readouterr().out
+
+    assert '"pipeline": "technical_ranking_backtest"' in out
+    assert '"universe_policy": "eligible_history"' in out
+    assert '"min_lookback": 120' in out
+
+
+def test_cli_engine_backtest_delegates(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_engine_backtest",
+        lambda **kwargs: {
+            "pipeline": "engine_score_backtest",
+            "score_type": kwargs["score_type"],
+            "round_trip_cost_bps": kwargs["round_trip_cost_bps"],
+        },
+    )
+
+    cli_main.main([
+        "engine-backtest",
+        "--end",
+        "2026-05-18",
+        "--lookback-years",
+        "5",
+        "--symbols",
+        "AAA,BBB",
+        "--score-type",
+        "swing",
+        "--round-trip-cost-bps",
+        "35",
+    ])
+    out = capsys.readouterr().out
+
+    assert '"pipeline": "engine_score_backtest"' in out
+    assert '"score_type": "swing"' in out
+    assert '"round_trip_cost_bps": 35.0' in out
 
 
 def test_cli_security_master_ingest_delegates(monkeypatch, capsys) -> None:

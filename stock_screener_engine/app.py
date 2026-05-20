@@ -10,6 +10,7 @@ from pathlib import Path
 
 from stock_screener_engine.config.settings import AppSettings, load_settings
 from stock_screener_engine.config.startup_validation import validate_startup_settings
+from stock_screener_engine.backtest.costs import IndianEquityCostModel
 from stock_screener_engine.data_sources.broker.factory import build_broker_adapters
 from stock_screener_engine.data_sources.filings.exchange_filings_provider import ExchangeFilingsProvider
 from stock_screener_engine.data_sources.filings.null_filings_provider import NullFilingsProvider
@@ -28,6 +29,11 @@ from stock_screener_engine.nlp.event_engine.audit import LowConfidenceAuditSink
 from stock_screener_engine.nlp.event_engine.pipeline import TextIntelligencePipeline
 from stock_screener_engine.nlp.ingestion.document_ingestor import TextDocumentIngestor
 from stock_screener_engine.nlp.ingestion.health_reporting import IngestionHealthSink
+from stock_screener_engine.pipelines.backtest_readiness import (
+    BacktestReadinessPipeline,
+    BacktestReadinessThresholds,
+)
+from stock_screener_engine.pipelines.backtest_dataset import BacktestDatasetPipeline
 from stock_screener_engine.pipelines.daily_batch import DailyBatchPipeline
 from stock_screener_engine.pipelines.data_foundation import DataFoundationPipeline
 from stock_screener_engine.pipelines.document_pipeline import DocumentIntelligencePipeline
@@ -396,15 +402,24 @@ def run_data_foundation(
     symbols: list[str] | None = None,
     config_path: str | None = None,
     interval: str = "1d",
+    universe_file: str | None = None,
 ) -> dict[str, object]:
     """Build the canonical security/calendar/OHLCV/corporate-action store."""
     settings = load_settings(config_path=config_path)
     validate_startup_settings(settings)
     configure_logging(settings.log_level)
-    pipeline = _build_data_foundation_pipeline(settings)
+    resolved_symbols, security_records = _resolve_runtime_universe(
+        settings=settings,
+        symbols=symbols,
+        universe_file=universe_file,
+    )
+    pipeline = _build_data_foundation_pipeline(
+        settings,
+        security_master_records=security_records,
+    )
     try:
         return pipeline.run(
-            symbols=symbols or settings.runtime_data.market_universe,
+            symbols=resolved_symbols,
             start=start,
             end=end,
             interval=interval,
@@ -419,18 +434,180 @@ def run_data_quality(
     symbols: list[str] | None = None,
     config_path: str | None = None,
     interval: str = "1d",
+    universe_file: str | None = None,
 ) -> dict[str, object]:
     """Read the canonical store and report data quality/reconciliation status."""
     settings = load_settings(config_path=config_path)
     validate_startup_settings(settings)
     configure_logging(settings.log_level)
+    resolved_symbols, _ = _resolve_runtime_universe(
+        settings=settings,
+        symbols=symbols,
+        universe_file=universe_file,
+    )
     pipeline = _build_data_foundation_pipeline(settings, market_adapters=[])
     try:
         return pipeline.quality_report(
-            symbols=symbols or settings.runtime_data.market_universe,
+            symbols=resolved_symbols,
             start=start,
             end=end,
             interval=interval,
+        )
+    finally:
+        pipeline.close()
+
+
+def run_backtest_readiness(
+    start: date,
+    end: date,
+    symbols: list[str] | None = None,
+    config_path: str | None = None,
+    interval: str = "1d",
+    universe_file: str | None = None,
+    min_history_years: float = 5.0,
+    min_history_rows: int | None = None,
+    horizons: list[int] | None = None,
+    require_fundamentals: bool = False,
+) -> dict[str, object]:
+    """Check whether canonical data can support serious historical evaluation."""
+    settings = load_settings(config_path=config_path)
+    validate_startup_settings(settings)
+    configure_logging(settings.log_level)
+    resolved_symbols, _ = _resolve_runtime_universe(
+        settings=settings,
+        symbols=symbols,
+        universe_file=universe_file,
+    )
+    pipeline = BacktestReadinessPipeline(settings=settings)
+    try:
+        return pipeline.run(
+            symbols=resolved_symbols,
+            start=start,
+            end=end,
+            interval=interval,
+            horizons=horizons or [5, 20, 60],
+            thresholds=BacktestReadinessThresholds(
+                min_history_years=min_history_years,
+                min_history_rows=min_history_rows,
+                require_fundamentals=require_fundamentals,
+            ),
+        )
+    finally:
+        pipeline.close()
+
+
+def run_forward_return_labels(
+    start: date,
+    end: date,
+    symbols: list[str] | None = None,
+    config_path: str | None = None,
+    interval: str = "1d",
+    universe_file: str | None = None,
+    universe_policy: str = "current",
+    min_history_rows: int = 1000,
+    horizons: list[int] | None = None,
+) -> dict[str, object]:
+    """Generate forward-return labels from canonical OHLCV bars."""
+    settings = load_settings(config_path=config_path)
+    validate_startup_settings(settings)
+    configure_logging(settings.log_level)
+    resolved_symbols, _ = _resolve_runtime_universe(
+        settings=settings,
+        symbols=symbols,
+        universe_file=universe_file,
+    )
+    pipeline = BacktestDatasetPipeline(settings=settings)
+    try:
+        return pipeline.build_forward_labels(
+            symbols=resolved_symbols,
+            start=start,
+            end=end,
+            horizons=horizons or [5, 20, 60],
+            universe_policy=universe_policy,
+            min_history_rows=min_history_rows,
+            interval=interval,
+        )
+    finally:
+        pipeline.close()
+
+
+def run_technical_backtest(
+    start: date,
+    end: date,
+    symbols: list[str] | None = None,
+    config_path: str | None = None,
+    interval: str = "1d",
+    universe_file: str | None = None,
+    universe_policy: str = "eligible_history",
+    min_history_rows: int = 1000,
+    min_lookback: int = 220,
+    horizons: list[int] | None = None,
+    round_trip_cost_bps: float | None = None,
+    slippage_bps: float = 5.0,
+) -> dict[str, object]:
+    """Run first-pass technical/swing ranking evaluation on canonical OHLCV."""
+    settings = load_settings(config_path=config_path)
+    validate_startup_settings(settings)
+    configure_logging(settings.log_level)
+    resolved_symbols, _ = _resolve_runtime_universe(
+        settings=settings,
+        symbols=symbols,
+        universe_file=universe_file,
+    )
+    pipeline = BacktestDatasetPipeline(settings=settings)
+    try:
+        return pipeline.evaluate_technical_ranking(
+            symbols=resolved_symbols,
+            start=start,
+            end=end,
+            horizons=horizons or [5, 20, 60],
+            universe_policy=universe_policy,
+            min_history_rows=min_history_rows,
+            min_lookback=min_lookback,
+            interval=interval,
+            cost_model=_build_cost_model(round_trip_cost_bps, slippage_bps),
+        )
+    finally:
+        pipeline.close()
+
+
+def run_engine_backtest(
+    start: date,
+    end: date,
+    symbols: list[str] | None = None,
+    config_path: str | None = None,
+    interval: str = "1d",
+    universe_file: str | None = None,
+    universe_policy: str = "eligible_history",
+    min_history_rows: int = 1000,
+    min_lookback: int = 220,
+    horizons: list[int] | None = None,
+    score_type: str = "swing",
+    round_trip_cost_bps: float | None = None,
+    slippage_bps: float = 5.0,
+) -> dict[str, object]:
+    """Run historical evaluation using the engine feature/scoring stack."""
+    settings = load_settings(config_path=config_path)
+    validate_startup_settings(settings)
+    configure_logging(settings.log_level)
+    resolved_symbols, _ = _resolve_runtime_universe(
+        settings=settings,
+        symbols=symbols,
+        universe_file=universe_file,
+    )
+    pipeline = BacktestDatasetPipeline(settings=settings)
+    try:
+        return pipeline.evaluate_engine_scores(
+            symbols=resolved_symbols,
+            start=start,
+            end=end,
+            horizons=horizons or [5, 20, 60],
+            universe_policy=universe_policy,
+            min_history_rows=min_history_rows,
+            min_lookback=min_lookback,
+            interval=interval,
+            score_type=score_type,
+            cost_model=_build_cost_model(round_trip_cost_bps, slippage_bps),
         )
     finally:
         pipeline.close()
@@ -841,6 +1018,7 @@ def _company_metadata_from_provider(provider: object, symbols: list[str]) -> dic
 def _build_data_foundation_pipeline(
     settings: AppSettings,
     market_adapters: list | None = None,
+    security_master_records: list | None = None,
 ) -> DataFoundationPipeline:
     if market_adapters is None:
         from stock_screener_engine.data_sources.market.provider_ingestion_adapter import ProviderMarketIngestionAdapter
@@ -864,6 +1042,55 @@ def _build_data_foundation_pipeline(
         settings=settings,
         market_adapters=market_adapters,
         exchange_adapters=exchange_adapters,
+        security_master_records=security_master_records,
+    )
+
+
+def _resolve_runtime_universe(
+    settings: AppSettings,
+    symbols: list[str] | None = None,
+    universe_file: str | None = None,
+) -> tuple[list[str], list | None]:
+    file_records = _load_universe_records(
+        universe_file=universe_file,
+        venue=settings.runtime_data.canonical_venue,
+    )
+    if symbols:
+        resolved = [symbol.strip().upper() for symbol in symbols if symbol.strip()]
+    elif file_records:
+        resolved = [record.symbol for record in file_records]
+    else:
+        resolved = settings.runtime_data.market_universe
+
+    if not file_records:
+        return resolved, None
+
+    by_symbol = {record.symbol: record for record in file_records}
+    from stock_screener_engine.data_sources.security_master.provider import build_minimal_security_master
+
+    fallback = {
+        record.symbol: record
+        for record in build_minimal_security_master(
+            [symbol for symbol in resolved if symbol not in by_symbol],
+            exchange=settings.runtime_data.canonical_venue,
+        )
+    }
+    combined = {**fallback, **by_symbol}
+    return resolved, [combined[symbol] for symbol in resolved if symbol in combined]
+
+
+def _load_universe_records(universe_file: str | None, venue: str) -> list:
+    if not universe_file:
+        return []
+    from stock_screener_engine.data_sources.security_master.csv_loader import load_security_master_csv
+
+    return load_security_master_csv(universe_file, default_exchange=venue)
+
+
+def _build_cost_model(round_trip_cost_bps: float | None, slippage_bps: float) -> IndianEquityCostModel:
+    return IndianEquityCostModel(
+        explicit_round_trip_bps=round_trip_cost_bps,
+        slippage_bps_per_side=slippage_bps,
     )
 
 

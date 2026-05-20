@@ -266,6 +266,17 @@ data/quality/       pipeline quality reports
 data/metadata.db    SQLite — features, scores, signals tables
 ```
 
+For real research runs, keep data, universes, plans, reports, PDFs, and other
+research artifacts outside the git repo. A recommended local setup:
+
+```bash
+export SSE_STORAGE_ROOT="$HOME/stock_quant_engine_data"
+export SSE_SQLITE_PATH="$SSE_STORAGE_ROOT/market.db"
+mkdir -p "$SSE_STORAGE_ROOT/universe"
+```
+
+`README.md` is the only documentation-style file intended to live in git.
+
 ---
 
 ## Configuration
@@ -391,6 +402,8 @@ setting the corresponding credentials.
 | `SignalGenerationPipeline` | On-demand | Regenerate signals from cached features |
 | `DataCollectionPipeline` | Scheduled / on-demand | Canonical exchange OHLCV/events/shareholding collection |
 | `DataFoundationPipeline` | Scheduled / on-demand | Persist security master, calendar, OHLCV, corporate actions, quality and source reconciliation |
+| `BacktestReadinessPipeline` | On-demand | Verify multi-year OHLCV, forward-return labels, security metadata, and factor-data coverage |
+| `BacktestDatasetPipeline` | On-demand | Generate forward-return labels and evaluate technical/engine score panels with costs and sector-neutral diagnostics |
 | `DocumentIntelligencePipeline` | On-demand | Local PDF/text document parsing, section detection, fact extraction |
 
 ### Intelligence Engines
@@ -401,7 +414,7 @@ setting the corresponding credentials.
 | Company Deep-Dive Research Engine | `research/company_deepdive/` | Report assembly implemented; peer/segment detail expands as data improves |
 | PDF / Document Intelligence Engine | `documents/`, `pipelines/document_pipeline.py` | Text/PDF loader, sections, facts, commentary, quality warnings |
 | Sector Intelligence Engine | `sector/` | Sector scoring, stance, drivers, risks, best expressions |
-| Evaluation Engine | `backtest/evaluation.py` | Unified facade over cross-sectional and sector/document diagnostics |
+| Evaluation Engine | `backtest/`, `pipelines/backtest_dataset.py` | Forward-return labels, ranking IC, quantile spreads, turnover, costs, and sector-neutral diagnostics |
 
 ---
 
@@ -475,7 +488,12 @@ stock-engine sector-report --sector "IT" --include-peers --format markdown
 stock-engine peer-report RELIANCE --as-of 2026-05-01 --format markdown
 stock-engine security-master-ingest --file securities.csv
 stock-engine data-foundation --start 2026-01-01 --end 2026-01-31 --symbols RELIANCE,TCS
-stock-engine data-quality --start 2026-01-01 --end 2026-01-31 --symbols RELIANCE,TCS
+stock-engine data-foundation --source yfinance --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv"
+stock-engine data-quality --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv"
+stock-engine backtest-readiness --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv"
+stock-engine backtest-labels --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --horizons 5,20,60
+stock-engine technical-backtest --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --universe-policy eligible_history --horizons 5,20,60
+stock-engine engine-backtest --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --universe-policy eligible_history --score-type swing --horizons 5,20,60
 stock-engine financials-ingest --symbol RELIANCE --file financials.csv --as-of 2026-05-01
 stock-engine valuation-ingest --symbol RELIANCE --file valuations.csv --as-of 2026-05-01
 stock-engine shareholding-ingest --symbol RELIANCE --file shareholding.csv --as-of 2026-05-01
@@ -487,7 +505,11 @@ Canonical workflow:
 
 ```bash
 stock-engine security-master-ingest --file securities.csv
-stock-engine data-foundation --source nse_http --start 2026-01-01 --end 2026-01-31 --symbols RELIANCE,TCS
+stock-engine data-foundation --source yfinance --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv"
+stock-engine backtest-readiness --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv"
+stock-engine backtest-labels --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv"
+stock-engine technical-backtest --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv"
+stock-engine engine-backtest --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --score-type swing
 stock-engine financials-ingest --symbol RELIANCE --file financials.csv --as-of 2026-05-01
 stock-engine valuation-ingest --symbol RELIANCE --file valuations.csv --as-of 2026-05-01
 stock-engine shareholding-ingest --symbol RELIANCE --file shareholding.csv --as-of 2026-05-01
@@ -498,6 +520,45 @@ stock-engine analyze RELIANCE --source canonical
 
 Security master CSV columns:
 `symbol, exchange, isin, series, company_name, sector, industry, listing_date, delisting_date, active, lot_size, tick_size, source`.
+
+`--universe-file` accepts either the same security-master CSV shape or a simple
+one-symbol-per-line file. If sectors and industries are present, they are
+persisted into the canonical security master during `data-foundation`.
+
+Backtest universe policies:
+
+- `current`: use every symbol in the supplied universe, even if the listing has partial history.
+- `eligible_history`: exclude symbols that fail the requested minimum history and forward-label gates.
+
+Backtest artifacts are written under the external storage root, for example:
+
+- `$SSE_STORAGE_ROOT/backtest/forward_return_labels.csv`
+- `$SSE_STORAGE_ROOT/backtest/technical_ranking_scores.csv`
+- `$SSE_STORAGE_ROOT/backtest/technical_ranking_evaluation.json`
+- `$SSE_STORAGE_ROOT/backtest/engine_swing_scores.csv`
+- `$SSE_STORAGE_ROOT/backtest/engine_swing_evaluation.json`
+
+`technical-backtest` evaluates a transparent first-pass price/volume score.
+`engine-backtest` evaluates the actual engine scoring stack historically
+(`swing`, `long_term`, or `conviction`). Both reports include gross and net
+quantile metrics, turnover, Spearman-style rank IC, sector-neutral IC, and a
+configurable Indian cash-equity cost model. Override costs with:
+
+```bash
+stock-engine engine-backtest --round-trip-cost-bps 35 --slippage-bps 5
+```
+
+Official index constituent CSVs, such as the NSE Indices Nifty 50 constituent
+file, should be downloaded into `$SSE_STORAGE_ROOT/universe/` and kept outside
+the git repository.
+
+Current Nifty 50 bootstrap baseline, generated from the external storage root:
+
+- Data foundation: 50/50 symbols, 60,166 daily OHLCV rows from 2021-05-18 to 2026-05-18.
+- Backtest readiness: 48/50 symbols have at least 1,000 daily bars; JIOFIN and TMPV are flagged for short listed history.
+- Forward-return labels: 176,248 labels across 5/20/60-bar horizons.
+- First technical baseline: negative IC across 5/20/60 bars, so the naive technical score is not alpha-positive.
+- Engine swing baseline: negative gross and sector-neutral IC across 5/20/60 bars after applying the current engine score to the history-eligible universe. This is an honest diagnostic: the evaluation harness is working, and the next research task is improving factor definitions and adding point-in-time fundamental/valuation/ownership data.
 
 Financial statement CSV columns:
 `period_end, filing_date, statement_type, revenue, ebit, net_income, operating_cash_flow, capex, total_debt, equity, total_assets, current_assets, current_liabilities, interest_expense, source_id`.

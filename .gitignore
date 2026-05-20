@@ -18,8 +18,10 @@ results/
 exports/
 snapshots/
 checkpoints/
+data/
 
 # Out-of-scope documentation and report-style outputs
+documentation/
 docs/
 data/calibration/
 data/cleaned/
