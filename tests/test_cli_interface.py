@@ -195,6 +195,47 @@ def test_cli_refresh_market_delegates(monkeypatch, capsys) -> None:
     assert '"run_scan": true' in out
 
 
+def test_cli_broker_health_delegates(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_broker_health",
+        lambda **kwargs: {
+            "pipeline": "broker_health",
+            "start": kwargs["start"].isoformat(),
+            "end": kwargs["end"].isoformat(),
+            "sources": kwargs["sources"],
+            "source_reports": {
+                "zerodha": {
+                    "enabled": True,
+                    "quote_coverage": 1.0,
+                    "historical_coverage": 1.0,
+                    "stale_symbols": [],
+                    "source_errors": [],
+                }
+            },
+        },
+    )
+
+    cli_main.main([
+        "broker-health",
+        "--start",
+        "2026-05-19",
+        "--end",
+        "2026-05-27",
+        "--symbols",
+        "AAA,BBB",
+        "--sources",
+        "zerodha,icici_breeze",
+        "--format",
+        "table",
+    ])
+    out = capsys.readouterr().out
+
+    assert '"source": "zerodha"' in out
+    assert '"quote_coverage": 1.0' in out
+    assert '"historical_coverage": 1.0' in out
+
+
 def test_cli_backtest_readiness_delegates(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         cli_main,

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from stock_screener_engine.app import (
     run_backtest_readiness,
+    run_broker_health,
     run_data_foundation,
     run_data_quality,
     run_deepdive_report,
@@ -110,6 +111,18 @@ def main(argv: list[str] | None = None) -> None:
     refresh.add_argument("--run-scan", action="store_true")
     refresh.add_argument("--scan-mode", choices=["daily", "swing", "full"], default="swing")
     _add_source_arg(refresh)
+
+    broker_health = subparsers.add_parser("broker-health", help="Compare Zerodha and ICICI Breeze market-data health")
+    broker_health.add_argument("--start", default=None, help="Start date YYYY-MM-DD")
+    broker_health.add_argument("--end", default=None, help="End date YYYY-MM-DD; defaults to today")
+    broker_health.add_argument("--lookback-days", type=int, default=10, help="Compute start date from end date")
+    broker_health.add_argument("--symbols", default="", help="Comma-separated symbol override")
+    broker_health.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
+    broker_health.add_argument("--sources", default="zerodha,icici_breeze", help="Comma-separated broker sources")
+    broker_health.add_argument("--interval", default="1d")
+    broker_health.add_argument("--sample-size", type=int, default=None)
+    broker_health.add_argument("--price-tolerance-pct", type=float, default=1.0)
+    broker_health.add_argument("--format", choices=["json", "table"], default="json")
 
     readiness = subparsers.add_parser("backtest-readiness", help="Check if canonical data is backtest-ready")
     readiness.add_argument("--start", default=None, help="Start date YYYY-MM-DD")
@@ -339,6 +352,22 @@ def main(argv: list[str] | None = None) -> None:
         _emit(result)
         return
 
+    if args.command == "broker-health":
+        start, end = _resolve_refresh_date_range(args)
+        result = run_broker_health(
+            start=start,
+            end=end,
+            symbols=_parse_symbols(args.symbols),
+            universe_file=args.universe_file,
+            config_path=config_path,
+            sources=_parse_symbols(args.sources),
+            interval=args.interval,
+            sample_size=args.sample_size,
+            price_tolerance_pct=args.price_tolerance_pct,
+        )
+        _emit(_broker_health_payload(result, args.format), fmt=args.format)
+        return
+
     if args.command == "backtest-readiness":
         start, end = _resolve_date_range(args, parser)
         result = run_backtest_readiness(
@@ -521,6 +550,29 @@ def _scan_payload(result: dict[str, object], mode: str, fmt: str) -> object:
                 return reports.get("markdown_top_swing", "")
             return reports.get("markdown_top_long", "")
     return result
+
+
+def _broker_health_payload(result: dict[str, object], fmt: str) -> object:
+    if fmt != "table":
+        return result
+    sources = result.get("source_reports", {})
+    if not isinstance(sources, Mapping):
+        return []
+    rows = []
+    for source, report in sources.items():
+        if not isinstance(report, Mapping):
+            continue
+        rows.append(
+            {
+                "source": source,
+                "enabled": report.get("enabled"),
+                "quote_coverage": report.get("quote_coverage"),
+                "historical_coverage": report.get("historical_coverage"),
+                "stale_symbols": len(report.get("stale_symbols", [])) if isinstance(report.get("stale_symbols"), list) else 0,
+                "errors": report.get("source_errors", []),
+            }
+        )
+    return rows
 
 
 def _emit(payload: object, fmt: str = "json") -> None:

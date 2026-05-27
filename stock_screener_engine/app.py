@@ -6,12 +6,12 @@ import csv
 import logging
 import os
 import time
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import cast
-from collections.abc import Iterator, Sequence
 
 from stock_screener_engine.config.settings import AppSettings, load_settings
 from stock_screener_engine.config.startup_validation import validate_startup_settings
@@ -118,6 +118,153 @@ def run_live_invalidation_daily(settings: AppSettings) -> dict[str, object]:
 def summarize_brokers(settings: AppSettings) -> dict[str, bool]:
     adapters = build_broker_adapters(settings)
     return {name: adapter.is_enabled() for name, adapter in adapters.items()}
+
+
+def run_broker_health(
+    start: date,
+    end: date,
+    symbols: list[str] | None = None,
+    universe_file: str | None = None,
+    config_path: str | None = None,
+    sources: list[str] | None = None,
+    interval: str = "1d",
+    sample_size: int | None = None,
+    price_tolerance_pct: float = 1.0,
+) -> dict[str, object]:
+    """Compare broker market-data health without placing orders."""
+    settings = load_settings(config_path=config_path)
+    validate_startup_settings(settings)
+    configure_logging(settings.log_level)
+    resolved_symbols, _ = _resolve_runtime_universe(
+        settings=settings,
+        symbols=symbols,
+        universe_file=universe_file,
+    )
+    if sample_size is not None and sample_size > 0:
+        resolved_symbols = resolved_symbols[:sample_size]
+
+    broker_sources = _resolve_broker_health_sources(sources)
+    adapters = build_broker_adapters(settings)
+    source_reports: dict[str, dict[str, object]] = {}
+    symbol_reports = {
+        symbol: {
+            "symbol": symbol,
+            "sources": {},
+            "quote_mismatch_pct": 0.0,
+            "historical_close_mismatch_pct": 0.0,
+            "preferred_source": "",
+        }
+        for symbol in resolved_symbols
+    }
+
+    for source_name, adapter_key in broker_sources:
+        adapter = adapters.get(adapter_key)
+        source_report = _new_broker_source_report(source_name, len(resolved_symbols))
+        source_reports[source_name] = source_report
+        if adapter is None:
+            error = f"unknown broker source '{source_name}'"
+            source_report["source_errors"] = [error]
+            _mark_source_unavailable(symbol_reports, source_name, resolved_symbols, error)
+            continue
+        source_report["enabled"] = adapter.is_enabled()
+        if not adapter.is_enabled():
+            error = f"{source_name} disabled or missing credentials"
+            source_report["source_errors"] = [error]
+            _mark_source_unavailable(symbol_reports, source_name, resolved_symbols, error)
+            continue
+
+        quote_payloads: dict[str, dict] = {}
+        bulk_quote_error = ""
+        try:
+            raw_quotes = adapter.get_quote(resolved_symbols)
+            quote_payloads = raw_quotes if isinstance(raw_quotes, dict) else {}
+        except Exception as exc:  # noqa: BLE001 - diagnostics must continue across sources
+            bulk_quote_error = _redact_broker_error(exc, settings)
+            source_report["source_errors"] = [bulk_quote_error]
+
+        for symbol in resolved_symbols:
+            payload = _broker_quote_payload(quote_payloads, symbol)
+            ltp = _quote_price(payload)
+            quote_ok = ltp > 0.0
+            if quote_ok:
+                source_report["quote_success"] = int(source_report["quote_success"]) + 1
+            else:
+                source_report["quote_failures"] = int(source_report["quote_failures"]) + 1
+
+            view = {
+                "enabled": True,
+                "quote_ok": quote_ok,
+                "historical_ok": False,
+                "ltp": round(ltp, 4),
+                "latest_bar_date": None,
+                "latest_close": 0.0,
+                "stale": False,
+                "errors": [bulk_quote_error] if bulk_quote_error else [],
+            }
+            symbol_sources = cast(dict[str, dict[str, object]], symbol_reports[symbol]["sources"])
+            symbol_sources[source_name] = view
+
+        for symbol in resolved_symbols:
+            symbol_sources = cast(dict[str, dict[str, object]], symbol_reports[symbol]["sources"])
+            view = symbol_sources[source_name]
+            try:
+                rows = adapter.get_historical(symbol, interval, start, end)
+            except Exception as exc:  # noqa: BLE001 - one bad symbol/source should not stop diagnostics
+                view["errors"] = [*cast(list[str], view.get("errors", [])), _redact_broker_error(exc, settings)]
+                source_report["historical_failures"] = int(source_report["historical_failures"]) + 1
+                continue
+
+            latest = _latest_broker_bar(rows)
+            latest_date = _broker_bar_date(latest)
+            latest_close = _safe_broker_float(_mapping(latest).get("close"))
+            historical_ok = bool(rows) and latest_close > 0.0
+            stale = historical_ok and latest_date is not None and latest_date < end
+            view.update(
+                {
+                    "historical_ok": historical_ok,
+                    "latest_bar_date": latest_date.isoformat() if latest_date else None,
+                    "latest_close": round(latest_close, 4),
+                    "stale": stale,
+                }
+            )
+            if historical_ok:
+                source_report["historical_success"] = int(source_report["historical_success"]) + 1
+            else:
+                source_report["historical_failures"] = int(source_report["historical_failures"]) + 1
+            if stale:
+                stale_symbols = cast(list[str], source_report["stale_symbols"])
+                stale_symbols.append(symbol)
+
+        _finalize_broker_source_report(source_report, len(resolved_symbols))
+
+    reconciliation = _reconcile_broker_sources(symbol_reports, broker_sources, price_tolerance_pct)
+    recommendations = _broker_health_recommendations(source_reports, reconciliation)
+    passed = bool(resolved_symbols) and any(
+        bool(report.get("enabled"))
+        and (int(report.get("quote_success", 0)) > 0 or int(report.get("historical_success", 0)) > 0)
+        for report in source_reports.values()
+    )
+    report = {
+        "pipeline": "broker_health",
+        "run_at": datetime.utcnow().isoformat() + "Z",
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "interval": interval,
+        "symbols_requested": len(resolved_symbols),
+        "sources": [source for source, _ in broker_sources],
+        "price_tolerance_pct": price_tolerance_pct,
+        "passed": passed,
+        "source_reports": source_reports,
+        "reconciliation": reconciliation,
+        "symbol_reports": list(symbol_reports.values()),
+        "recommendations": recommendations,
+    }
+    LocalFileStorage(settings.storage.root_dir).save_json(
+        report,
+        filename="broker_health_report.json",
+        subdir="quality",
+    )
+    return report
 
 
 def run_screen(config_path: str | None = None) -> dict[str, object]:
@@ -683,6 +830,234 @@ def _symbols_needing_retry(report: dict[str, object], requested_symbols: Sequenc
 
 def _mapping(value: object) -> dict:
     return value if isinstance(value, dict) else {}
+
+
+def _resolve_broker_health_sources(sources: Sequence[str] | None) -> list[tuple[str, str]]:
+    raw_sources = sources or ["zerodha", "icici_breeze"]
+    resolved: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for raw in raw_sources:
+        adapter_key = _broker_adapter_key(raw)
+        if not adapter_key or adapter_key in seen:
+            continue
+        seen.add(adapter_key)
+        source_name = "icici_breeze" if adapter_key == "breeze" else adapter_key
+        resolved.append((source_name, adapter_key))
+    return resolved or [("zerodha", "zerodha"), ("icici_breeze", "breeze")]
+
+
+def _broker_adapter_key(source: str) -> str:
+    text = str(source or "").strip().lower().replace("-", "_")
+    if text in {"icici", "icici_breeze", "breeze"}:
+        return "breeze"
+    if text in {"zerodha", "kite", "kiteconnect"}:
+        return "zerodha"
+    return text
+
+
+def _new_broker_source_report(source_name: str, requested: int) -> dict[str, object]:
+    return {
+        "source": source_name,
+        "enabled": False,
+        "symbols_requested": requested,
+        "quote_success": 0,
+        "quote_failures": 0,
+        "quote_coverage": 0.0,
+        "historical_success": 0,
+        "historical_failures": 0,
+        "historical_coverage": 0.0,
+        "stale_symbols": [],
+        "source_errors": [],
+    }
+
+
+def _mark_source_unavailable(
+    symbol_reports: Mapping[str, dict[str, object]],
+    source_name: str,
+    symbols: Sequence[str],
+    error: str,
+) -> None:
+    for symbol in symbols:
+        symbol_sources = cast(dict[str, dict[str, object]], symbol_reports[symbol]["sources"])
+        symbol_sources[source_name] = {
+            "enabled": False,
+            "quote_ok": False,
+            "historical_ok": False,
+            "ltp": 0.0,
+            "latest_bar_date": None,
+            "latest_close": 0.0,
+            "stale": False,
+            "errors": [error],
+        }
+
+
+def _broker_quote_payload(quote_payloads: Mapping[str, object], symbol: str) -> dict:
+    symbol = symbol.strip().upper()
+    return _mapping(
+        quote_payloads.get(symbol)
+        or quote_payloads.get(f"NSE:{symbol}")
+        or quote_payloads.get(symbol.replace("&", "%26"))
+    )
+
+
+def _quote_price(payload: Mapping[str, object]) -> float:
+    for key in ("ltp", "last_price", "last", "close"):
+        value = _safe_broker_float(payload.get(key))
+        if value > 0.0:
+            return value
+    ohlc = _mapping(payload.get("ohlc"))
+    return _safe_broker_float(ohlc.get("close"))
+
+
+def _latest_broker_bar(rows: object) -> dict:
+    if not isinstance(rows, list):
+        return {}
+    dated_rows = [(_broker_bar_date(row), row) for row in rows if isinstance(row, dict)]
+    valid = [(bar_date, row) for bar_date, row in dated_rows if bar_date is not None]
+    if valid:
+        return max(valid, key=lambda item: item[0])[1]
+    return rows[-1] if rows and isinstance(rows[-1], dict) else {}
+
+
+def _broker_bar_date(row: object) -> date | None:
+    value = _mapping(row).get("date") or _mapping(row).get("timestamp") or _mapping(row).get("datetime")
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _safe_broker_float(value: object) -> float:
+    try:
+        return float(str(value).strip().replace(",", "")) if value is not None and str(value).strip() else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _finalize_broker_source_report(report: dict[str, object], requested: int) -> None:
+    if requested <= 0:
+        return
+    report["quote_coverage"] = round(int(report["quote_success"]) / requested, 4)
+    report["historical_coverage"] = round(int(report["historical_success"]) / requested, 4)
+
+
+def _reconcile_broker_sources(
+    symbol_reports: Mapping[str, dict[str, object]],
+    broker_sources: Sequence[tuple[str, str]],
+    price_tolerance_pct: float,
+) -> dict[str, object]:
+    price_mismatches: list[dict[str, object]] = []
+    close_mismatches: list[dict[str, object]] = []
+    preferred_counts: dict[str, int] = {}
+    source_order = [source for source, _ in broker_sources]
+
+    for symbol, report in symbol_reports.items():
+        source_views = cast(dict[str, dict[str, object]], report["sources"])
+        quote_prices = {
+            source: _safe_broker_float(view.get("ltp"))
+            for source, view in source_views.items()
+            if bool(view.get("quote_ok")) and _safe_broker_float(view.get("ltp")) > 0.0
+        }
+        close_prices = {
+            source: _safe_broker_float(view.get("latest_close"))
+            for source, view in source_views.items()
+            if bool(view.get("historical_ok")) and _safe_broker_float(view.get("latest_close")) > 0.0
+        }
+        quote_diff = _price_diff_pct(quote_prices.values())
+        close_diff = _price_diff_pct(close_prices.values())
+        report["quote_mismatch_pct"] = quote_diff
+        report["historical_close_mismatch_pct"] = close_diff
+        if quote_diff > price_tolerance_pct:
+            price_mismatches.append({"symbol": symbol, "diff_pct": quote_diff, "prices": quote_prices})
+        if close_diff > price_tolerance_pct:
+            close_mismatches.append({"symbol": symbol, "diff_pct": close_diff, "prices": close_prices})
+
+        preferred = _preferred_broker_source(source_views, source_order)
+        report["preferred_source"] = preferred
+        if preferred:
+            preferred_counts[preferred] = preferred_counts.get(preferred, 0) + 1
+
+    return {
+        "price_mismatch_count": len(price_mismatches),
+        "historical_close_mismatch_count": len(close_mismatches),
+        "price_mismatches": price_mismatches,
+        "historical_close_mismatches": close_mismatches,
+        "preferred_source_counts": preferred_counts,
+    }
+
+
+def _price_diff_pct(values: object) -> float:
+    prices = [float(value) for value in values if float(value) > 0.0]
+    if len(prices) < 2:
+        return 0.0
+    low = min(prices)
+    if low <= 0.0:
+        return 0.0
+    return round(((max(prices) - low) / low) * 100.0, 4)
+
+
+def _preferred_broker_source(source_views: Mapping[str, dict[str, object]], source_order: Sequence[str]) -> str:
+    best_source = ""
+    best_score = -1
+    for source in source_order:
+        view = source_views.get(source)
+        if not view or not bool(view.get("enabled")):
+            continue
+        score = 0
+        score += 2 if bool(view.get("quote_ok")) else 0
+        score += 2 if bool(view.get("historical_ok")) else 0
+        score -= 1 if bool(view.get("stale")) else 0
+        if score > best_score:
+            best_score = score
+            best_source = source
+    return best_source
+
+
+def _broker_health_recommendations(
+    source_reports: Mapping[str, dict[str, object]],
+    reconciliation: Mapping[str, object],
+) -> list[str]:
+    recommendations: list[str] = []
+    for source, report in source_reports.items():
+        if not bool(report.get("enabled")):
+            recommendations.append(f"Enable or fix credentials for {source} before relying on it.")
+            continue
+        if float(report.get("quote_coverage", 0.0)) < 0.95:
+            recommendations.append(f"Investigate quote coverage for {source}.")
+        if float(report.get("historical_coverage", 0.0)) < 0.95:
+            recommendations.append(f"Investigate historical coverage for {source}.")
+        stale_symbols = cast(list[str], report.get("stale_symbols", []))
+        if stale_symbols:
+            recommendations.append(f"Review stale historical bars for {source}: {', '.join(stale_symbols[:10])}.")
+    if int(reconciliation.get("price_mismatch_count", 0)) > 0:
+        recommendations.append("Review broker quote price mismatches before using live prices for signals.")
+    if int(reconciliation.get("historical_close_mismatch_count", 0)) > 0:
+        recommendations.append("Review broker historical close mismatches before backtest/live reconciliation.")
+    return recommendations or ["Broker health checks passed for the tested universe."]
+
+
+def _redact_broker_error(exc: Exception, settings: AppSettings) -> str:
+    text = str(exc) or exc.__class__.__name__
+    for secret in _broker_secret_values(settings):
+        if secret and len(secret) >= 4:
+            text = text.replace(secret, "[redacted]")
+    return text[:500]
+
+
+def _broker_secret_values(settings: AppSettings) -> list[str]:
+    values: list[str] = []
+    for integration in (settings.integrations.zerodha, settings.integrations.breeze):
+        for value in integration.credentials().values():
+            if value:
+                values.append(value)
+    return values
 
 
 def _refresh_attempt_summary(
