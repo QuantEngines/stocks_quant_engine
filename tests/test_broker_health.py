@@ -113,6 +113,31 @@ def test_broker_health_reports_disabled_source_without_crashing(monkeypatch, tmp
     ]
 
 
+def test_broker_health_surfaces_enabled_zero_coverage(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("SSE_STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setenv("SSE_SQLITE_PATH", str(tmp_path / "market.db"))
+    monkeypatch.setattr(
+        "stock_screener_engine.app.build_broker_adapters",
+        lambda settings: {
+            "breeze": _HealthBroker(quote_price=0.0, close_price=0.0),
+        },
+    )
+
+    report = run_broker_health(
+        start=date(2026, 5, 25),
+        end=date(2026, 5, 27),
+        symbols=["AAA"],
+        sources=["icici_breeze"],
+    )
+
+    assert report["source_reports"]["icici_breeze"]["source_errors"] == [
+        "1 quote failures",
+        "1 historical failures",
+    ]
+    assert "no usable quote returned" in report["symbol_reports"][0]["sources"]["icici_breeze"]["errors"]
+    assert "no usable historical bars returned" in report["symbol_reports"][0]["sources"]["icici_breeze"]["errors"]
+
+
 def test_broker_health_redacts_credentials_from_errors(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("SSE_STORAGE_ROOT", str(tmp_path))
     monkeypatch.setenv("SSE_SQLITE_PATH", str(tmp_path / "market.db"))

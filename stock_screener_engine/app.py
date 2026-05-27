@@ -186,6 +186,9 @@ def run_broker_health(
             payload = _broker_quote_payload(quote_payloads, symbol)
             ltp = _quote_price(payload)
             quote_ok = ltp > 0.0
+            errors = [bulk_quote_error] if bulk_quote_error else []
+            if not quote_ok and not bulk_quote_error:
+                errors.append(_broker_payload_error(payload) or "no usable quote returned")
             if quote_ok:
                 source_report["quote_success"] = int(source_report["quote_success"]) + 1
             else:
@@ -199,7 +202,7 @@ def run_broker_health(
                 "latest_bar_date": None,
                 "latest_close": 0.0,
                 "stale": False,
-                "errors": [bulk_quote_error] if bulk_quote_error else [],
+                "errors": errors,
             }
             symbol_sources = cast(dict[str, dict[str, object]], symbol_reports[symbol]["sources"])
             symbol_sources[source_name] = view
@@ -219,6 +222,11 @@ def run_broker_health(
             latest_close = _safe_broker_float(_mapping(latest).get("close"))
             historical_ok = bool(rows) and latest_close > 0.0
             stale = historical_ok and latest_date is not None and latest_date < end
+            if not historical_ok:
+                view["errors"] = [
+                    *cast(list[str], view.get("errors", [])),
+                    _broker_payload_error(latest) or "no usable historical bars returned",
+                ]
             view.update(
                 {
                     "historical_ok": historical_ok,
@@ -946,6 +954,21 @@ def _finalize_broker_source_report(report: dict[str, object], requested: int) ->
         return
     report["quote_coverage"] = round(int(report["quote_success"]) / requested, 4)
     report["historical_coverage"] = round(int(report["historical_success"]) / requested, 4)
+    source_errors = cast(list[str], report.get("source_errors", []))
+    if int(report.get("quote_failures", 0)) and not any("quote" in error for error in source_errors):
+        source_errors.append(f"{report['quote_failures']} quote failures")
+    if int(report.get("historical_failures", 0)) and not any("historical" in error for error in source_errors):
+        source_errors.append(f"{report['historical_failures']} historical failures")
+    report["source_errors"] = source_errors
+
+
+def _broker_payload_error(payload: object) -> str:
+    mapping = _mapping(payload)
+    for key in ("error", "Error", "message", "Message", "status_message", "Status"):
+        value = mapping.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()[:500]
+    return ""
 
 
 def _reconcile_broker_sources(

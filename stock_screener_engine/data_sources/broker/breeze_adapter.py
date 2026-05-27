@@ -49,13 +49,14 @@ class BreezeAdapter(OptionalBrokerAdapterBase):
                 payload = client.get_quotes(stock_code=symbol, exchange_code="NSE")
             except Exception as exc:
                 logger.warning("Breeze quote lookup failed for %s; continuing without quote: %s", symbol, exc)
-                out[symbol] = {"ltp": 0.0, "last_price": 0.0, "volume": 0.0}
+                out[symbol] = {"ltp": 0.0, "last_price": 0.0, "volume": 0.0, "error": str(exc)}
                 continue
             row = _first_success_row(payload)
             out[symbol] = {
                 "ltp": _safe_float(_pick(row, "ltp", "last_price", "last")),
                 "last_price": _safe_float(_pick(row, "ltp", "last_price", "last")),
                 "volume": _safe_float(_pick(row, "total_quantity_traded", "volume")),
+                "error": _payload_error(payload) if not row else "",
             }
         return out
 
@@ -125,6 +126,16 @@ def _first_success_row(payload: object) -> dict:
     if isinstance(rows, list):
         return rows[0] if rows and isinstance(rows[0], dict) else {}
     return rows if isinstance(rows, dict) else {}
+
+
+def _payload_error(payload: object) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("Error", "error", "Message", "message", "Status", "status"):
+        value = payload.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
 
 
 def _pick(row: dict, *keys: str) -> object:
