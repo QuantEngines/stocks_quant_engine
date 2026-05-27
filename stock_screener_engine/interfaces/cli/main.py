@@ -625,7 +625,7 @@ def _years_before(end: date, years: int) -> date:
 def _add_source_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--source",
-        choices=["canonical", "nse_http", "nse", "yfinance", "zerodha", "icici", "breeze", "mock"],
+        choices=["canonical", "nse_http", "nse", "yfinance", "zerodha", "icici", "breeze", "icici_breeze", "mock"],
         default=None,
         help="Market data source override for this command",
     )

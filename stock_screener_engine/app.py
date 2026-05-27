@@ -198,6 +198,8 @@ def run_broker_health(
                 "enabled": True,
                 "quote_ok": quote_ok,
                 "historical_ok": False,
+                "broker_symbol": str(payload.get("broker_symbol") or payload.get("stock_code") or symbol),
+                "mapping_source": str(payload.get("mapping_source") or ""),
                 "ltp": round(ltp, 4),
                 "latest_bar_date": None,
                 "latest_close": 0.0,
@@ -222,6 +224,10 @@ def run_broker_health(
             latest_close = _safe_broker_float(_mapping(latest).get("close"))
             historical_ok = bool(rows) and latest_close > 0.0
             stale = historical_ok and latest_date is not None and latest_date < end
+            latest_map = _mapping(latest)
+            if latest_map.get("broker_symbol") or latest_map.get("stock_code"):
+                view["broker_symbol"] = str(latest_map.get("broker_symbol") or latest_map.get("stock_code"))
+                view["mapping_source"] = str(latest_map.get("mapping_source") or view.get("mapping_source") or "")
             if not historical_ok:
                 view["errors"] = [
                     *cast(list[str], view.get("errors", [])),
@@ -891,6 +897,8 @@ def _mark_source_unavailable(
             "enabled": False,
             "quote_ok": False,
             "historical_ok": False,
+            "broker_symbol": symbol,
+            "mapping_source": "",
             "ltp": 0.0,
             "latest_bar_date": None,
             "latest_close": 0.0,

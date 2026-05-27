@@ -9,15 +9,25 @@ from typing import Any, Iterable, cast
 from stock_screener_engine.config.settings import BrokerIntegrationSettings
 from stock_screener_engine.data_sources.base.interfaces import OrderRequest
 from stock_screener_engine.data_sources.broker._optional_base import OptionalBrokerAdapterBase
+from stock_screener_engine.data_sources.broker.breeze_symbol_mapper import (
+    BreezeSymbolMapper,
+    BreezeSymbolResolution,
+)
 
 
 logger = logging.getLogger(__name__)
 
 
 class BreezeAdapter(OptionalBrokerAdapterBase):
-    def __init__(self, settings: BrokerIntegrationSettings, client: object | None = None) -> None:
+    def __init__(
+        self,
+        settings: BrokerIntegrationSettings,
+        client: object | None = None,
+        symbol_mapper: BreezeSymbolMapper | None = None,
+    ) -> None:
         super().__init__(enabled=settings.enabled, credentials=settings.credentials(), broker_name="breeze")
         self._client = client
+        self._symbol_mapper = symbol_mapper or BreezeSymbolMapper.from_env()
 
     def _breeze(self):
         self._guard()
@@ -45,14 +55,27 @@ class BreezeAdapter(OptionalBrokerAdapterBase):
             symbol = str(raw_symbol).strip().upper()
             if not symbol:
                 continue
+            resolved = self.resolve_symbol(symbol)
             try:
-                payload = client.get_quotes(stock_code=symbol, exchange_code="NSE")
+                payload = client.get_quotes(stock_code=resolved.stock_code, exchange_code=resolved.exchange_code)
             except Exception as exc:
-                logger.warning("Breeze quote lookup failed for %s; continuing without quote: %s", symbol, exc)
-                out[symbol] = {"ltp": 0.0, "last_price": 0.0, "volume": 0.0, "error": str(exc)}
+                logger.warning(
+                    "Breeze quote lookup failed for %s mapped to %s; continuing without quote: %s",
+                    symbol,
+                    resolved.stock_code,
+                    exc,
+                )
+                out[symbol] = {
+                    **_mapping_payload(resolved),
+                    "ltp": 0.0,
+                    "last_price": 0.0,
+                    "volume": 0.0,
+                    "error": str(exc),
+                }
                 continue
             row = _first_success_row(payload)
             out[symbol] = {
+                **_mapping_payload(resolved),
                 "ltp": _safe_float(_pick(row, "ltp", "last_price", "last")),
                 "last_price": _safe_float(_pick(row, "ltp", "last_price", "last")),
                 "volume": _safe_float(_pick(row, "total_quantity_traded", "volume")),
@@ -61,21 +84,23 @@ class BreezeAdapter(OptionalBrokerAdapterBase):
         return out
 
     def get_historical(self, symbol: str, interval: str, start: date, end: date) -> list[dict]:
+        resolved = self.resolve_symbol(symbol)
         payload = self._breeze().get_historical_data_v2(
             interval=_breeze_interval(interval),
             from_date=_breeze_dt(start, market_open=True),
             to_date=_breeze_dt(end, market_open=False),
-            stock_code=symbol.strip().upper(),
-            exchange_code="NSE",
+            stock_code=resolved.stock_code,
+            exchange_code=resolved.exchange_code,
             product_type="cash",
         )
         rows = payload.get("Success", []) if isinstance(payload, dict) else []
-        return [_normalize_bar(row) for row in rows or []]
+        return [_normalize_bar(row, resolved) for row in rows or []]
 
     def place_order(self, order_request: OrderRequest) -> dict:
+        resolved = self.resolve_symbol(order_request.symbol)
         payload = self._breeze().place_order(
-            stock_code=order_request.symbol,
-            exchange_code="NSE",
+            stock_code=resolved.stock_code,
+            exchange_code=resolved.exchange_code,
             product="cash",
             action=order_request.side.lower(),
             order_type=order_request.order_type.lower(),
@@ -86,6 +111,9 @@ class BreezeAdapter(OptionalBrokerAdapterBase):
         row = _first_success_row(payload)
         order_id = _pick(row, "order_id", "orderid", "OrderId")
         return {"status": "submitted" if order_id else "unknown", "order_id": order_id, "broker": self.broker_name}
+
+    def resolve_symbol(self, symbol: str) -> BreezeSymbolResolution:
+        return self._symbol_mapper.resolve(symbol, client=self._breeze())
 
     def get_positions(self) -> list[dict]:
         payload = self._breeze().get_portfolio_positions()
@@ -145,8 +173,19 @@ def _pick(row: dict, *keys: str) -> object:
     return None
 
 
-def _normalize_bar(row: dict) -> dict:
+def _mapping_payload(resolved: BreezeSymbolResolution) -> dict[str, str]:
     return {
+        "broker_symbol": resolved.stock_code,
+        "stock_code": resolved.stock_code,
+        "mapping_source": resolved.source,
+        "mapping_error": resolved.error,
+    }
+
+
+def _normalize_bar(row: dict, resolved: BreezeSymbolResolution | None = None) -> dict:
+    mapping = _mapping_payload(resolved) if resolved else {}
+    return {
+        **mapping,
         "date": str(_pick(row, "datetime", "date", "time") or ""),
         "open": _safe_float(_pick(row, "open", "open_price")),
         "high": _safe_float(_pick(row, "high", "high_price")),

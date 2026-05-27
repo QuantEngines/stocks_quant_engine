@@ -450,7 +450,13 @@ SSE_ENABLE_BREEZE=true
 SSE_BREEZE_API_KEY=...
 SSE_BREEZE_API_SECRET=...
 SSE_BREEZE_SESSION_TOKEN=...
+SSE_BREEZE_SYMBOL_MAP_PATH=./data/broker/breeze_symbol_map.csv
 ```
+
+The Breeze adapter resolves NSE symbols to ICICI `stock_code` values with a
+local ignored CSV cache. Manual overrides can be added with columns such as
+`symbol,stock_code,source`; otherwise the adapter learns mappings from Breeze
+`get_names` and persists them under `SSE_BREEZE_SYMBOL_MAP_PATH`.
 
 ---
 
