@@ -128,6 +128,7 @@ def test_broker_health_surfaces_enabled_zero_coverage(monkeypatch, tmp_path) -> 
         end=date(2026, 5, 27),
         symbols=["AAA"],
         sources=["icici_breeze"],
+        retries=0,
     )
 
     assert report["source_reports"]["icici_breeze"]["source_errors"] == [
@@ -136,6 +137,83 @@ def test_broker_health_surfaces_enabled_zero_coverage(monkeypatch, tmp_path) -> 
     ]
     assert "no usable quote returned" in report["symbol_reports"][0]["sources"]["icici_breeze"]["errors"]
     assert "no usable historical bars returned" in report["symbol_reports"][0]["sources"]["icici_breeze"]["errors"]
+
+
+def test_broker_health_retries_transient_quote_and_history_failures(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("SSE_STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setenv("SSE_SQLITE_PATH", str(tmp_path / "market.db"))
+
+    class _FlakyBroker(_HealthBroker):
+        def __init__(self) -> None:
+            super().__init__(quote_price=100.0, close_price=100.0)
+            self.quote_calls = 0
+            self.history_calls = 0
+
+        def get_quote(self, symbols):
+            self.quote_calls += 1
+            if self.quote_calls == 1:
+                raise RuntimeError("Too many requests")
+            return super().get_quote(symbols)
+
+        def get_historical(self, symbol, interval, start, end):
+            self.history_calls += 1
+            if self.history_calls == 1:
+                raise RuntimeError("Too many requests")
+            return super().get_historical(symbol, interval, start, end)
+
+    broker = _FlakyBroker()
+    monkeypatch.setattr(
+        "stock_screener_engine.app.build_broker_adapters",
+        lambda settings: {
+            "zerodha": broker,
+        },
+    )
+
+    report = run_broker_health(
+        start=date(2026, 5, 25),
+        end=date(2026, 5, 27),
+        symbols=["AAA"],
+        sources=["zerodha"],
+        retries=1,
+        retry_delay_seconds=0,
+    )
+
+    source = report["source_reports"]["zerodha"]
+    view = report["symbol_reports"][0]["sources"]["zerodha"]
+    assert source["quote_coverage"] == 1.0
+    assert source["historical_coverage"] == 1.0
+    assert source["quote_retry_symbols"] == ["AAA"]
+    assert source["historical_retry_symbols"] == ["AAA"]
+    assert view["quote_attempts"] == 2
+    assert view["historical_attempts"] == 2
+
+
+def test_broker_health_classifies_lagged_reconciliation_source(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("SSE_STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setenv("SSE_SQLITE_PATH", str(tmp_path / "market.db"))
+    monkeypatch.setattr(
+        "stock_screener_engine.app.build_broker_adapters",
+        lambda settings: {
+            "breeze": _HealthBroker(quote_price=100.0, close_price=100.0, latest_date="2026-05-26"),
+        },
+    )
+
+    report = run_broker_health(
+        start=date(2026, 5, 25),
+        end=date(2026, 5, 27),
+        symbols=["AAA"],
+        sources=["icici_breeze"],
+        retries=0,
+        lagged_sources=["icici_breeze"],
+    )
+
+    source = report["source_reports"]["icici_breeze"]
+    view = report["symbol_reports"][0]["sources"]["icici_breeze"]
+    assert source["role"] == "lagged_reconciliation"
+    assert source["stale_symbols"] == []
+    assert source["lagged_symbols"] == ["AAA"]
+    assert view["lagged"] is True
+    assert view["staleness_status"] == "lagged_expected"
 
 
 def test_broker_health_redacts_credentials_from_errors(monkeypatch, tmp_path) -> None:
@@ -163,8 +241,9 @@ def test_broker_health_redacts_credentials_from_errors(monkeypatch, tmp_path) ->
         end=date(2026, 5, 27),
         symbols=["AAA"],
         sources=["zerodha"],
+        retries=0,
     )
 
-    error = report["source_reports"]["zerodha"]["source_errors"][0]
+    error = report["symbol_reports"][0]["sources"]["zerodha"]["errors"][0]
     assert "token_value" not in error
     assert "[redacted] rejected" == error

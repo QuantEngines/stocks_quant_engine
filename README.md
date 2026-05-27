@@ -509,7 +509,7 @@ stock-engine data-foundation --start 2026-01-01 --end 2026-01-31 --symbols RELIA
 stock-engine data-foundation --source yfinance --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv"
 stock-engine data-quality --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv"
 stock-engine refresh-market --source zerodha --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --lookback-days 10 --batch-size 25 --retries 2 --run-scan
-stock-engine broker-health --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --sources zerodha,icici_breeze --lookback-days 10 --format table
+stock-engine broker-health --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --sources zerodha,icici_breeze --lookback-days 10 --retries 2 --primary-source zerodha --lagged-sources icici_breeze --format table
 stock-engine backtest-readiness --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv"
 stock-engine backtest-labels --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --horizons 5,20,60
 stock-engine technical-backtest --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --universe-policy eligible_history --horizons 5,20,60

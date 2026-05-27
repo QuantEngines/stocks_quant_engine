@@ -122,6 +122,10 @@ def main(argv: list[str] | None = None) -> None:
     broker_health.add_argument("--interval", default="1d")
     broker_health.add_argument("--sample-size", type=int, default=None)
     broker_health.add_argument("--price-tolerance-pct", type=float, default=1.0)
+    broker_health.add_argument("--retries", type=int, default=2)
+    broker_health.add_argument("--retry-delay-seconds", type=float, default=1.0)
+    broker_health.add_argument("--primary-source", default="zerodha")
+    broker_health.add_argument("--lagged-sources", default="icici_breeze", help="Comma-separated sources allowed one-session EOD lag")
     broker_health.add_argument("--format", choices=["json", "table"], default="json")
 
     readiness = subparsers.add_parser("backtest-readiness", help="Check if canonical data is backtest-ready")
@@ -364,6 +368,10 @@ def main(argv: list[str] | None = None) -> None:
             interval=args.interval,
             sample_size=args.sample_size,
             price_tolerance_pct=args.price_tolerance_pct,
+            retries=args.retries,
+            retry_delay_seconds=args.retry_delay_seconds,
+            primary_source=args.primary_source,
+            lagged_sources=_parse_symbols(args.lagged_sources),
         )
         _emit(_broker_health_payload(result, args.format), fmt=args.format)
         return
@@ -565,11 +573,14 @@ def _broker_health_payload(result: dict[str, object], fmt: str) -> object:
         rows.append(
             {
                 "source": source,
+                "role": report.get("role"),
                 "enabled": report.get("enabled"),
                 "quote_coverage": report.get("quote_coverage"),
                 "historical_coverage": report.get("historical_coverage"),
                 "stale_symbols": len(report.get("stale_symbols", [])) if isinstance(report.get("stale_symbols"), list) else 0,
+                "lagged_symbols": len(report.get("lagged_symbols", [])) if isinstance(report.get("lagged_symbols"), list) else 0,
                 "errors": report.get("source_errors", []),
+                "notes": report.get("source_notes", []),
             }
         )
     return rows

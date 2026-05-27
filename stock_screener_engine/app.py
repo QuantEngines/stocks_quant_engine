@@ -9,7 +9,7 @@ import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -130,6 +130,10 @@ def run_broker_health(
     interval: str = "1d",
     sample_size: int | None = None,
     price_tolerance_pct: float = 1.0,
+    retries: int = 2,
+    retry_delay_seconds: float = 1.0,
+    primary_source: str = "zerodha",
+    lagged_sources: list[str] | None = None,
 ) -> dict[str, object]:
     """Compare broker market-data health without placing orders."""
     settings = load_settings(config_path=config_path)
@@ -144,6 +148,13 @@ def run_broker_health(
         resolved_symbols = resolved_symbols[:sample_size]
 
     broker_sources = _resolve_broker_health_sources(sources)
+    retries = max(0, int(retries))
+    retry_delay_seconds = max(0.0, float(retry_delay_seconds))
+    source_policy = _build_broker_source_policy(
+        broker_sources=broker_sources,
+        primary_source=primary_source,
+        lagged_sources=lagged_sources,
+    )
     adapters = build_broker_adapters(settings)
     source_reports: dict[str, dict[str, object]] = {}
     symbol_reports = {
@@ -159,7 +170,13 @@ def run_broker_health(
 
     for source_name, adapter_key in broker_sources:
         adapter = adapters.get(adapter_key)
-        source_report = _new_broker_source_report(source_name, len(resolved_symbols))
+        source_report = _new_broker_source_report(
+            source_name,
+            len(resolved_symbols),
+            source_policy[source_name],
+            retries=retries,
+            retry_delay_seconds=retry_delay_seconds,
+        )
         source_reports[source_name] = source_report
         if adapter is None:
             error = f"unknown broker source '{source_name}'"
@@ -173,21 +190,23 @@ def run_broker_health(
             _mark_source_unavailable(symbol_reports, source_name, resolved_symbols, error)
             continue
 
-        quote_payloads: dict[str, dict] = {}
-        bulk_quote_error = ""
-        try:
-            raw_quotes = adapter.get_quote(resolved_symbols)
-            quote_payloads = raw_quotes if isinstance(raw_quotes, dict) else {}
-        except Exception as exc:  # noqa: BLE001 - diagnostics must continue across sources
-            bulk_quote_error = _redact_broker_error(exc, settings)
-            source_report["source_errors"] = [bulk_quote_error]
+        quote_payloads, quote_errors, quote_attempts = _fetch_broker_quotes_with_retries(
+            adapter=adapter,
+            symbols=resolved_symbols,
+            settings=settings,
+            retries=retries,
+            retry_delay_seconds=retry_delay_seconds,
+        )
+        source_report["quote_retry_symbols"] = [
+            symbol for symbol, attempts in quote_attempts.items() if attempts > 1
+        ]
 
         for symbol in resolved_symbols:
             payload = _broker_quote_payload(quote_payloads, symbol)
             ltp = _quote_price(payload)
             quote_ok = ltp > 0.0
-            errors = [bulk_quote_error] if bulk_quote_error else []
-            if not quote_ok and not bulk_quote_error:
+            errors = list(quote_errors.get(symbol, []))
+            if not quote_ok and not errors:
                 errors.append(_broker_payload_error(payload) or "no usable quote returned")
             if quote_ok:
                 source_report["quote_success"] = int(source_report["quote_success"]) + 1
@@ -203,7 +222,11 @@ def run_broker_health(
                 "ltp": round(ltp, 4),
                 "latest_bar_date": None,
                 "latest_close": 0.0,
+                "lagged": False,
                 "stale": False,
+                "staleness_status": "unknown",
+                "quote_attempts": quote_attempts.get(symbol, 0),
+                "historical_attempts": 0,
                 "errors": errors,
             }
             symbol_sources = cast(dict[str, dict[str, object]], symbol_reports[symbol]["sources"])
@@ -212,18 +235,27 @@ def run_broker_health(
         for symbol in resolved_symbols:
             symbol_sources = cast(dict[str, dict[str, object]], symbol_reports[symbol]["sources"])
             view = symbol_sources[source_name]
-            try:
-                rows = adapter.get_historical(symbol, interval, start, end)
-            except Exception as exc:  # noqa: BLE001 - one bad symbol/source should not stop diagnostics
-                view["errors"] = [*cast(list[str], view.get("errors", [])), _redact_broker_error(exc, settings)]
-                source_report["historical_failures"] = int(source_report["historical_failures"]) + 1
-                continue
+            rows, historical_errors, historical_attempts = _fetch_broker_history_with_retries(
+                adapter=adapter,
+                symbol=symbol,
+                interval=interval,
+                start=start,
+                end=end,
+                settings=settings,
+                retries=retries,
+                retry_delay_seconds=retry_delay_seconds,
+            )
+            view["historical_attempts"] = historical_attempts
+            if historical_attempts > 1:
+                retry_symbols = cast(list[str], source_report["historical_retry_symbols"])
+                retry_symbols.append(symbol)
 
             latest = _latest_broker_bar(rows)
             latest_date = _broker_bar_date(latest)
             latest_close = _safe_broker_float(_mapping(latest).get("close"))
             historical_ok = bool(rows) and latest_close > 0.0
-            stale = historical_ok and latest_date is not None and latest_date < end
+            lagged = _is_expected_lagged_history(source_policy[source_name], latest_date, end)
+            stale = historical_ok and latest_date is not None and latest_date < end and not lagged
             latest_map = _mapping(latest)
             if latest_map.get("broker_symbol") or latest_map.get("stock_code"):
                 view["broker_symbol"] = str(latest_map.get("broker_symbol") or latest_map.get("stock_code"))
@@ -231,6 +263,7 @@ def run_broker_health(
             if not historical_ok:
                 view["errors"] = [
                     *cast(list[str], view.get("errors", [])),
+                    *historical_errors,
                     _broker_payload_error(latest) or "no usable historical bars returned",
                 ]
             view.update(
@@ -238,7 +271,9 @@ def run_broker_health(
                     "historical_ok": historical_ok,
                     "latest_bar_date": latest_date.isoformat() if latest_date else None,
                     "latest_close": round(latest_close, 4),
+                    "lagged": lagged,
                     "stale": stale,
+                    "staleness_status": _staleness_status(historical_ok, latest_date, end, lagged, stale),
                 }
             )
             if historical_ok:
@@ -248,10 +283,13 @@ def run_broker_health(
             if stale:
                 stale_symbols = cast(list[str], source_report["stale_symbols"])
                 stale_symbols.append(symbol)
+            if lagged:
+                lagged_symbols = cast(list[str], source_report["lagged_symbols"])
+                lagged_symbols.append(symbol)
 
         _finalize_broker_source_report(source_report, len(resolved_symbols))
 
-    reconciliation = _reconcile_broker_sources(symbol_reports, broker_sources, price_tolerance_pct)
+    reconciliation = _reconcile_broker_sources(symbol_reports, broker_sources, price_tolerance_pct, source_policy)
     recommendations = _broker_health_recommendations(source_reports, reconciliation)
     passed = bool(resolved_symbols) and any(
         bool(report.get("enabled"))
@@ -266,7 +304,10 @@ def run_broker_health(
         "interval": interval,
         "symbols_requested": len(resolved_symbols),
         "sources": [source for source, _ in broker_sources],
+        "source_policy": source_policy,
         "price_tolerance_pct": price_tolerance_pct,
+        "retries": retries,
+        "retry_delay_seconds": retry_delay_seconds,
         "passed": passed,
         "source_reports": source_reports,
         "reconciliation": reconciliation,
@@ -869,19 +910,64 @@ def _broker_adapter_key(source: str) -> str:
     return text
 
 
-def _new_broker_source_report(source_name: str, requested: int) -> dict[str, object]:
+def _build_broker_source_policy(
+    broker_sources: Sequence[tuple[str, str]],
+    primary_source: str,
+    lagged_sources: Sequence[str] | None,
+) -> dict[str, dict[str, object]]:
+    primary = _broker_source_name(primary_source)
+    lagged = {_broker_source_name(source) for source in (lagged_sources or ["icici_breeze"]) if source}
+    policy: dict[str, dict[str, object]] = {}
+    for source_name, _ in broker_sources:
+        if source_name == primary:
+            role = "primary_live"
+            staleness_policy = "same_day"
+        elif source_name in lagged:
+            role = "lagged_reconciliation"
+            staleness_policy = "previous_session_allowed"
+        else:
+            role = "reconciliation"
+            staleness_policy = "same_day"
+        policy[source_name] = {
+            "role": role,
+            "staleness_policy": staleness_policy,
+            "preferred_for_live": role == "primary_live",
+        }
+    return policy
+
+
+def _broker_source_name(source: str) -> str:
+    adapter_key = _broker_adapter_key(source)
+    return "icici_breeze" if adapter_key == "breeze" else adapter_key
+
+
+def _new_broker_source_report(
+    source_name: str,
+    requested: int,
+    policy: Mapping[str, object],
+    retries: int,
+    retry_delay_seconds: float,
+) -> dict[str, object]:
     return {
         "source": source_name,
+        "role": policy.get("role", "reconciliation"),
+        "staleness_policy": policy.get("staleness_policy", "same_day"),
         "enabled": False,
         "symbols_requested": requested,
+        "retries": retries,
+        "retry_delay_seconds": retry_delay_seconds,
         "quote_success": 0,
         "quote_failures": 0,
         "quote_coverage": 0.0,
+        "quote_retry_symbols": [],
         "historical_success": 0,
         "historical_failures": 0,
         "historical_coverage": 0.0,
+        "historical_retry_symbols": [],
         "stale_symbols": [],
+        "lagged_symbols": [],
         "source_errors": [],
+        "source_notes": [],
     }
 
 
@@ -902,9 +988,100 @@ def _mark_source_unavailable(
             "ltp": 0.0,
             "latest_bar_date": None,
             "latest_close": 0.0,
+            "lagged": False,
             "stale": False,
+            "staleness_status": "unavailable",
+            "quote_attempts": 0,
+            "historical_attempts": 0,
             "errors": [error],
         }
+
+
+def _fetch_broker_quotes_with_retries(
+    adapter: object,
+    symbols: Sequence[str],
+    settings: AppSettings,
+    retries: int,
+    retry_delay_seconds: float,
+) -> tuple[dict[str, dict], dict[str, list[str]], dict[str, int]]:
+    payloads: dict[str, dict] = {}
+    errors: dict[str, list[str]] = {symbol: [] for symbol in symbols}
+    attempts: dict[str, int] = {symbol: 0 for symbol in symbols}
+    pending = list(symbols)
+
+    for attempt in range(retries + 1):
+        if not pending:
+            break
+        if attempt > 0 and retry_delay_seconds:
+            time.sleep(retry_delay_seconds)
+        for symbol in pending:
+            attempts[symbol] += 1
+        try:
+            raw_quotes = adapter.get_quote(pending)  # type: ignore[attr-defined]
+            raw_payloads = raw_quotes if isinstance(raw_quotes, dict) else {}
+        except Exception as exc:  # noqa: BLE001 - diagnostics must continue across sources
+            error = _redact_broker_error(exc, settings)
+            for symbol in pending:
+                errors[symbol].append(error)
+            continue
+
+        next_pending: list[str] = []
+        for symbol in pending:
+            payload = _broker_quote_payload(raw_payloads, symbol)
+            payloads[symbol] = payload
+            if _quote_price(payload) <= 0.0:
+                error = _broker_payload_error(payload) or "no usable quote returned"
+                errors[symbol].append(error)
+                next_pending.append(symbol)
+        pending = next_pending
+
+    return payloads, _dedupe_error_map(errors), attempts
+
+
+def _fetch_broker_history_with_retries(
+    adapter: object,
+    symbol: str,
+    interval: str,
+    start: date,
+    end: date,
+    settings: AppSettings,
+    retries: int,
+    retry_delay_seconds: float,
+) -> tuple[list[dict], list[str], int]:
+    errors: list[str] = []
+    rows: list[dict] = []
+    attempts = 0
+    for attempt in range(retries + 1):
+        if attempt > 0 and retry_delay_seconds:
+            time.sleep(retry_delay_seconds)
+        attempts += 1
+        try:
+            raw_rows = adapter.get_historical(symbol, interval, start, end)  # type: ignore[attr-defined]
+            rows = raw_rows if isinstance(raw_rows, list) else []
+        except Exception as exc:  # noqa: BLE001 - diagnostics must continue across sources
+            errors.append(_redact_broker_error(exc, settings))
+            continue
+        latest = _latest_broker_bar(rows)
+        if rows and _safe_broker_float(_mapping(latest).get("close")) > 0.0:
+            break
+        errors.append(_broker_payload_error(latest) or "no usable historical bars returned")
+    return rows, _dedupe_errors(errors), attempts
+
+
+def _dedupe_error_map(errors: Mapping[str, Sequence[str]]) -> dict[str, list[str]]:
+    return {symbol: _dedupe_errors(values) for symbol, values in errors.items()}
+
+
+def _dedupe_errors(errors: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for error in errors:
+        text = str(error or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
 
 
 def _broker_quote_payload(quote_payloads: Mapping[str, object], symbol: str) -> dict:
@@ -950,6 +1127,39 @@ def _broker_bar_date(row: object) -> date | None:
         return None
 
 
+def _is_expected_lagged_history(policy: Mapping[str, object], latest_date: date | None, end: date) -> bool:
+    if latest_date is None or latest_date >= end:
+        return False
+    if str(policy.get("staleness_policy")) != "previous_session_allowed":
+        return False
+    return latest_date >= _previous_business_day(end)
+
+
+def _previous_business_day(value: date) -> date:
+    previous = value - timedelta(days=1)
+    while previous.weekday() >= 5:
+        previous = previous - timedelta(days=1)
+    return previous
+
+
+def _staleness_status(
+    historical_ok: bool,
+    latest_date: date | None,
+    end: date,
+    lagged: bool,
+    stale: bool,
+) -> str:
+    if not historical_ok:
+        return "missing"
+    if lagged:
+        return "lagged_expected"
+    if stale:
+        return "stale"
+    if latest_date and latest_date >= end:
+        return "fresh"
+    return "unknown"
+
+
 def _safe_broker_float(value: object) -> float:
     try:
         return float(str(value).strip().replace(",", "")) if value is not None and str(value).strip() else 0.0
@@ -967,6 +1177,11 @@ def _finalize_broker_source_report(report: dict[str, object], requested: int) ->
         source_errors.append(f"{report['quote_failures']} quote failures")
     if int(report.get("historical_failures", 0)) and not any("historical" in error for error in source_errors):
         source_errors.append(f"{report['historical_failures']} historical failures")
+    lagged_symbols = cast(list[str], report.get("lagged_symbols", []))
+    if lagged_symbols:
+        source_notes = cast(list[str], report.get("source_notes", []))
+        source_notes.append(f"{len(lagged_symbols)} lagged historical bars allowed by policy")
+        report["source_notes"] = source_notes
     report["source_errors"] = source_errors
 
 
@@ -983,6 +1198,7 @@ def _reconcile_broker_sources(
     symbol_reports: Mapping[str, dict[str, object]],
     broker_sources: Sequence[tuple[str, str]],
     price_tolerance_pct: float,
+    source_policy: Mapping[str, Mapping[str, object]] | None = None,
 ) -> dict[str, object]:
     price_mismatches: list[dict[str, object]] = []
     close_mismatches: list[dict[str, object]] = []
@@ -1010,7 +1226,7 @@ def _reconcile_broker_sources(
         if close_diff > price_tolerance_pct:
             close_mismatches.append({"symbol": symbol, "diff_pct": close_diff, "prices": close_prices})
 
-        preferred = _preferred_broker_source(source_views, source_order)
+        preferred = _preferred_broker_source(source_views, source_order, source_policy or {})
         report["preferred_source"] = preferred
         if preferred:
             preferred_counts[preferred] = preferred_counts.get(preferred, 0) + 1
@@ -1034,17 +1250,24 @@ def _price_diff_pct(values: object) -> float:
     return round(((max(prices) - low) / low) * 100.0, 4)
 
 
-def _preferred_broker_source(source_views: Mapping[str, dict[str, object]], source_order: Sequence[str]) -> str:
+def _preferred_broker_source(
+    source_views: Mapping[str, dict[str, object]],
+    source_order: Sequence[str],
+    source_policy: Mapping[str, Mapping[str, object]],
+) -> str:
     best_source = ""
     best_score = -1
     for source in source_order:
         view = source_views.get(source)
         if not view or not bool(view.get("enabled")):
             continue
+        policy = source_policy.get(source, {})
         score = 0
-        score += 2 if bool(view.get("quote_ok")) else 0
+        score += 4 if bool(view.get("quote_ok")) else -4
         score += 2 if bool(view.get("historical_ok")) else 0
-        score -= 1 if bool(view.get("stale")) else 0
+        score += 3 if bool(policy.get("preferred_for_live")) else 0
+        score -= 1 if str(policy.get("role")) == "lagged_reconciliation" else 0
+        score -= 2 if bool(view.get("stale")) else 0
         if score > best_score:
             best_score = score
             best_source = source
@@ -1067,6 +1290,12 @@ def _broker_health_recommendations(
         stale_symbols = cast(list[str], report.get("stale_symbols", []))
         if stale_symbols:
             recommendations.append(f"Review stale historical bars for {source}: {', '.join(stale_symbols[:10])}.")
+        lagged_symbols = cast(list[str], report.get("lagged_symbols", []))
+        if lagged_symbols and str(report.get("role")) == "lagged_reconciliation":
+            recommendations.append(
+                f"{source} is configured as a lagged reconciliation source; "
+                f"{len(lagged_symbols)} symbols had expected previous-session history."
+            )
     if int(reconciliation.get("price_mismatch_count", 0)) > 0:
         recommendations.append("Review broker quote price mismatches before using live prices for signals.")
     if int(reconciliation.get("historical_close_mismatch_count", 0)) > 0:
