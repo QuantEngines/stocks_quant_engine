@@ -33,6 +33,6 @@ class SignalGenerationPipeline:
             text_pipeline=text_pipeline,
         )
 
-    def run(self, symbols: list[str] | None = None) -> dict[str, list]:
+    def run(self, symbols: list[str] | None = None) -> dict[str, object]:
         logger.info("Running signal generation pipeline")
         return self.engine.run(symbols=symbols, regime_score=None)

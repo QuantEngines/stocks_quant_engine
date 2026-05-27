@@ -427,6 +427,35 @@ def test_run_security_master_ingest_persists_csv_rows(monkeypatch, tmp_path) -> 
     assert rows[0].sector == "IT"
 
 
+def test_run_security_master_ingest_accepts_nse_style_headers(monkeypatch, tmp_path) -> None:
+    csv_path = tmp_path / "nifty.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "Company Name,Industry,Symbol,Series,ISIN Code",
+                "Reliance Industries Ltd.,Oil Gas & Consumable Fuels,RELIANCE,EQ,INE002A01018",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SSE_STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setenv("SSE_SQLITE_PATH", str(tmp_path / "market.db"))
+
+    report = run_security_master_ingest(file_path=str(csv_path))
+
+    store = MarketDataStore(str(tmp_path / "market.db"))
+    try:
+        rows = store.get_security_master(["RELIANCE"])
+    finally:
+        store.close()
+
+    assert report["passed"] is True
+    assert report["persisted"] == 1
+    assert rows[0].company_name == "Reliance Industries Ltd."
+    assert rows[0].sector == "Oil Gas & Consumable Fuels"
+    assert rows[0].isin == "INE002A01018"
+
+
 def _statement(
     symbol: str,
     period_end: str,

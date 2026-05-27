@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time
-from typing import Iterable
+import logging
+from typing import Any, Iterable, cast
 
 from stock_screener_engine.config.settings import BrokerIntegrationSettings
 from stock_screener_engine.data_sources.base.interfaces import OrderRequest
 from stock_screener_engine.data_sources.broker._optional_base import OptionalBrokerAdapterBase
+
+
+logger = logging.getLogger(__name__)
 
 
 class BreezeAdapter(OptionalBrokerAdapterBase):
@@ -41,7 +45,12 @@ class BreezeAdapter(OptionalBrokerAdapterBase):
             symbol = str(raw_symbol).strip().upper()
             if not symbol:
                 continue
-            payload = client.get_quotes(stock_code=symbol, exchange_code="NSE")
+            try:
+                payload = client.get_quotes(stock_code=symbol, exchange_code="NSE")
+            except Exception as exc:
+                logger.warning("Breeze quote lookup failed for %s; continuing without quote: %s", symbol, exc)
+                out[symbol] = {"ltp": 0.0, "last_price": 0.0, "volume": 0.0}
+                continue
             row = _first_success_row(payload)
             out[symbol] = {
                 "ltp": _safe_float(_pick(row, "ltp", "last_price", "last")),
@@ -138,6 +147,6 @@ def _normalize_bar(row: dict) -> dict:
 
 def _safe_float(value: object) -> float:
     try:
-        return float(value) if value is not None and str(value).strip() else 0.0
+        return float(cast(Any, value)) if value is not None and str(value).strip() else 0.0
     except (TypeError, ValueError):
         return 0.0

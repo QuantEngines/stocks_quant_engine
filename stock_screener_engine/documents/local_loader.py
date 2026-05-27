@@ -6,6 +6,7 @@ import hashlib
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 from stock_screener_engine.documents.schemas import FinancialDocument
 
@@ -56,16 +57,19 @@ class LocalDocumentLoader:
 
     def _read_pdf(self, path: Path) -> tuple[str, list[str]]:
         warnings: list[str] = []
+        reader_cls: Any
         try:
-            from pypdf import PdfReader  # type: ignore[import-not-found]
+            from pypdf import PdfReader as _PypdfReader  # type: ignore[import-not-found]
+            reader_cls = _PypdfReader
         except ModuleNotFoundError:
             try:
-                from PyPDF2 import PdfReader  # type: ignore[import-not-found]
+                from PyPDF2 import PdfReader as _PyPDF2Reader  # type: ignore[import-not-found]
+                reader_cls = _PyPDF2Reader
             except ModuleNotFoundError:
                 return "", ["PDF parser unavailable; install pypdf or PyPDF2 for text extraction."]
 
         try:
-            reader = PdfReader(str(path))
+            reader = reader_cls(str(path))
             chunks: list[str] = []
             for idx, page in enumerate(reader.pages):
                 try:

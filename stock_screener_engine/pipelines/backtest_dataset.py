@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Sequence
+from uuid import uuid4
 
 from stock_screener_engine.backtest.dataset import (
+    BACKTEST_DATASET_SCHEMA_VERSION,
+    ENGINE_SCORE_FEATURE_VERSION,
+    FORWARD_LABEL_FEATURE_VERSION,
     BacktestUniverseSelector,
     EngineScoreDatasetBuilder,
     ForwardReturnLabelBuilder,
+    TECHNICAL_SCORE_FEATURE_VERSION,
     TechnicalRankingDatasetBuilder,
     summarize_forward_labels,
 )
@@ -52,6 +57,17 @@ class BacktestDatasetPipeline:
         interval: str = "1d",
     ) -> dict[str, object]:
         selection = self._select_universe(symbols, start, end, horizons, universe_policy, min_history_rows, interval)
+        run_context = self._run_context(
+            pipeline="forward_return_labels",
+            end=end,
+            interval=interval,
+        )
+        label_lineage = self._lineage_for_rows(
+            run_context=run_context,
+            feature_version=FORWARD_LABEL_FEATURE_VERSION,
+            model_version="",
+            quality_status="passed" if selection.selected_symbols else "empty",
+        )
         labels = ForwardReturnLabelBuilder(
             store=self.store,
             venue=self.settings.runtime_data.canonical_venue,
@@ -61,6 +77,7 @@ class BacktestDatasetPipeline:
             start=start,
             end=end,
             horizons=horizons,
+            lineage=label_lineage,
         )
         rows = [label.to_dict() for label in labels]
         labels_path = self.file_store.save_rows_csv(
@@ -78,6 +95,10 @@ class BacktestDatasetPipeline:
             "label_summary": summarize_forward_labels(labels),
             "labels_persisted": len(labels),
             "labels_path": str(labels_path),
+            "lineage": {
+                "run": run_context,
+                "labels": label_lineage,
+            },
         }
         report_path = self.file_store.save_json(report, filename="forward_return_labels_report.json", subdir="backtest")
         report["report_path"] = str(report_path)
@@ -96,6 +117,23 @@ class BacktestDatasetPipeline:
         cost_model: IndianEquityCostModel | None = None,
     ) -> dict[str, object]:
         selection = self._select_universe(symbols, start, end, horizons, universe_policy, min_history_rows, interval)
+        run_context = self._run_context(
+            pipeline="technical_ranking_backtest",
+            end=end,
+            interval=interval,
+        )
+        label_lineage = self._lineage_for_rows(
+            run_context=run_context,
+            feature_version=FORWARD_LABEL_FEATURE_VERSION,
+            model_version="",
+            quality_status="passed" if selection.selected_symbols else "empty",
+        )
+        score_lineage = self._lineage_for_rows(
+            run_context=run_context,
+            feature_version=TECHNICAL_SCORE_FEATURE_VERSION,
+            model_version="technical_ranking.v1",
+            quality_status="passed" if selection.selected_symbols else "empty",
+        )
         max_horizon = max([int(h) for h in horizons], default=0)
         labels = ForwardReturnLabelBuilder(
             store=self.store,
@@ -106,6 +144,7 @@ class BacktestDatasetPipeline:
             start=start,
             end=end,
             horizons=horizons,
+            lineage=label_lineage,
         )
         builder = TechnicalRankingDatasetBuilder(
             store=self.store,
@@ -118,6 +157,7 @@ class BacktestDatasetPipeline:
             start=start,
             end=end,
             max_horizon=max_horizon,
+            lineage=score_lineage,
         )
         sector_by_symbol = {
             record.symbol: record.sector or "Unknown"
@@ -157,6 +197,11 @@ class BacktestDatasetPipeline:
                 "labels_csv": str(labels_path),
                 "scores_csv": str(scores_path),
             },
+            "lineage": {
+                "run": run_context,
+                "labels": label_lineage,
+                "scores": score_lineage,
+            },
         }
         report_path = self.file_store.save_json(report, filename="technical_ranking_evaluation.json", subdir="backtest")
         report["artifacts"]["report_json"] = str(report_path)
@@ -176,6 +221,23 @@ class BacktestDatasetPipeline:
         cost_model: IndianEquityCostModel | None = None,
     ) -> dict[str, object]:
         selection = self._select_universe(symbols, start, end, horizons, universe_policy, min_history_rows, interval)
+        run_context = self._run_context(
+            pipeline="engine_score_backtest",
+            end=end,
+            interval=interval,
+        )
+        label_lineage = self._lineage_for_rows(
+            run_context=run_context,
+            feature_version=FORWARD_LABEL_FEATURE_VERSION,
+            model_version="",
+            quality_status="passed" if selection.selected_symbols else "empty",
+        )
+        score_lineage = self._lineage_for_rows(
+            run_context=run_context,
+            feature_version=ENGINE_SCORE_FEATURE_VERSION,
+            model_version=f"engine_{score_type.strip().lower()}_scoring.v1",
+            quality_status="passed" if selection.selected_symbols else "empty",
+        )
         max_horizon = max([int(h) for h in horizons], default=0)
         labels = ForwardReturnLabelBuilder(
             store=self.store,
@@ -186,6 +248,7 @@ class BacktestDatasetPipeline:
             start=start,
             end=end,
             horizons=horizons,
+            lineage=label_lineage,
         )
         builder = EngineScoreDatasetBuilder(
             store=self.store,
@@ -207,6 +270,7 @@ class BacktestDatasetPipeline:
             end=end,
             max_horizon=max_horizon,
             score_type=score_type,
+            lineage=score_lineage,
         )
         evaluation = builder.evaluate(
             scores=scores,
@@ -242,6 +306,11 @@ class BacktestDatasetPipeline:
                 "labels_csv": str(labels_path),
                 "scores_csv": str(scores_path),
             },
+            "lineage": {
+                "run": run_context,
+                "labels": label_lineage,
+                "scores": score_lineage,
+            },
         }
         report_path = self.file_store.save_json(report, filename=f"engine_{score_type}_evaluation.json", subdir="backtest")
         report["artifacts"]["report_json"] = str(report_path)
@@ -269,6 +338,35 @@ class BacktestDatasetPipeline:
             min_history_rows=min_history_rows,
             horizons=horizons,
         )
+
+    def _run_context(self, pipeline: str, end: date, interval: str) -> dict[str, str]:
+        run_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+        return {
+            "run_id": f"{pipeline}:{run_at.replace(':', '').replace('-', '')}:{uuid4().hex[:8]}",
+            "pipeline": pipeline,
+            "source_id": f"{self.settings.runtime_data.canonical_venue}:ohlcv_bars:{interval}",
+            "source_timestamp": end.isoformat(),
+            "ingested_at": run_at,
+            "schema_version": BACKTEST_DATASET_SCHEMA_VERSION,
+        }
+
+    @staticmethod
+    def _lineage_for_rows(
+        run_context: dict[str, str],
+        feature_version: str,
+        model_version: str,
+        quality_status: str,
+    ) -> dict[str, str]:
+        return {
+            "run_id": run_context["run_id"],
+            "source_id": run_context["source_id"],
+            "source_timestamp": run_context["source_timestamp"],
+            "ingested_at": run_context["ingested_at"],
+            "quality_status": quality_status,
+            "schema_version": run_context["schema_version"],
+            "feature_version": feature_version,
+            "model_version": model_version,
+        }
 
     def close(self) -> None:
         self.store.close()

@@ -53,6 +53,7 @@ class LocalFileStorage:
         payload = [
             {
                 "symbol": s.symbol,
+                "sector": s.sector,
                 "category": s.category,
                 "score": s.score,
                 "explanation": {

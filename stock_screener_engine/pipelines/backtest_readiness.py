@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Sequence
+from typing import Any, Mapping, Sequence, cast
 
 from stock_screener_engine.config.settings import AppSettings
 from stock_screener_engine.data_sources.calendar.market_calendar import MarketCalendar
@@ -118,7 +118,7 @@ class BacktestReadinessPipeline:
             }
 
         coverage = self.store.coverage_summary(symbols=requested, start=start, end=end, interval=interval)
-        ohlcv_coverage = float(coverage.get("coverage") or 0.0)
+        ohlcv_coverage = _coverage_value(coverage)
         if ohlcv_coverage < thresholds.min_ohlcv_coverage:
             issues.append(
                 f"OHLCV symbol coverage {ohlcv_coverage:.1%} below readiness threshold "
@@ -140,15 +140,15 @@ class BacktestReadinessPipeline:
             as_of=end,
             venue=self.settings.runtime_data.canonical_venue,
         )
-        if float(financials_coverage.get("coverage") or 0.0) < 1.0:
+        if _coverage_value(financials_coverage) < 1.0:
             message = "Financial statement coverage is incomplete; long-term backtests will be technical-only for missing stocks"
             if thresholds.require_fundamentals:
                 issues.append(message)
             else:
                 warnings.append(message)
-        if float(valuation_coverage.get("coverage") or 0.0) < 1.0:
+        if _coverage_value(valuation_coverage) < 1.0:
             warnings.append("Valuation coverage is incomplete; valuation factors will be unavailable for missing stocks")
-        if float(shareholding_coverage.get("coverage") or 0.0) < 1.0:
+        if _coverage_value(shareholding_coverage) < 1.0:
             warnings.append("Shareholding coverage is incomplete; ownership/governance factors will be unavailable for missing stocks")
         if not self.settings.runtime_data.canonical_adjusted_history:
             warnings.append("Canonical adjusted history is disabled; split/bonus-aware backtests should enable adjusted history")
@@ -188,3 +188,7 @@ class BacktestReadinessPipeline:
 
     def close(self) -> None:
         self.store.close()
+
+
+def _coverage_value(report: Mapping[str, object]) -> float:
+    return float(cast(Any, report.get("coverage") or 0.0))

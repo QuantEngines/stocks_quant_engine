@@ -58,6 +58,8 @@ def test_forward_return_label_builder_generates_close_to_close_labels(tmp_path: 
         assert first.as_of == "2026-01-01"
         assert first.horizon == 1
         assert round(first.forward_return, 4) == 0.1
+        assert first.schema_version == "backtest_dataset.v1"
+        assert first.feature_version == "forward_return_label.v1"
         assert len(labels) == 7
     finally:
         store.close()
@@ -93,10 +95,16 @@ def test_backtest_dataset_pipeline_persists_labels_and_technical_evaluation(tmp_
         )
 
         assert labels_report["labels_persisted"] > 0
+        assert labels_report["lineage"]["run"]["run_id"]
+        assert labels_report["lineage"]["labels"]["feature_version"] == "forward_return_label.v1"
         assert Path(str(labels_report["labels_path"])).exists()
         assert evaluation["score_rows"] > 0
         assert evaluation["evaluation"]["rows_evaluated"] > 0
+        assert evaluation["lineage"]["scores"]["model_version"] == "technical_ranking.v1"
         assert Path(str(evaluation["artifacts"]["report_json"])).exists()
+        scores_header = Path(str(evaluation["artifacts"]["scores_csv"])).read_text(encoding="utf-8").splitlines()[0]
+        assert "run_id" in scores_header
+        assert "feature_version" in scores_header
     finally:
         store.close()
 
@@ -119,7 +127,52 @@ def test_engine_score_builder_uses_engine_scoring_stack(tmp_path: Path) -> None:
         assert rows[0].symbol == "AAA"
         assert rows[0].score_type == "swing"
         assert rows[0].swing_score >= 0.0
+        assert rows[0].schema_version == "backtest_dataset.v1"
+        assert rows[0].feature_version == "engine_feature_stack.v1"
+        assert rows[0].to_flat_dict()["model_version"] == "engine_scoring.v1"
         assert "swing_trend_strength" in rows[0].components
+    finally:
+        store.close()
+
+
+def test_dataset_builders_accept_explicit_lineage(tmp_path: Path) -> None:
+    store = MarketDataStore(str(tmp_path / "market.db"))
+    start = date(2026, 1, 1)
+    lineage = {
+        "run_id": "unit-run",
+        "source_id": "NSE:ohlcv_bars:1d",
+        "source_timestamp": "2026-01-31",
+        "ingested_at": "2026-02-01T00:00:00Z",
+        "quality_status": "passed",
+        "schema_version": "backtest_dataset.v1",
+        "feature_version": "custom_feature.v1",
+        "model_version": "custom_model.v1",
+    }
+    try:
+        store.upsert_ohlcv(_bars("AAA", start, 30, start_price=100.0, step=1.0))
+
+        labels = ForwardReturnLabelBuilder(store=store).build(
+            symbols=["AAA"],
+            start=start,
+            end=start + timedelta(days=40),
+            horizons=[1],
+            lineage=lineage,
+        )
+        scores = EngineScoreDatasetBuilder(store=store, min_lookback=5).build_scores(
+            symbols=["AAA"],
+            start=start,
+            end=start + timedelta(days=40),
+            max_horizon=5,
+            score_type="swing",
+            lineage=lineage,
+        )
+
+        assert labels[0].run_id == "unit-run"
+        assert labels[0].source_id == "NSE:ohlcv_bars:1d"
+        assert labels[0].model_version == "custom_model.v1"
+        assert scores[0].run_id == "unit-run"
+        assert scores[0].quality_status == "passed"
+        assert scores[0].to_flat_dict()["feature_version"] == "custom_feature.v1"
     finally:
         store.close()
 

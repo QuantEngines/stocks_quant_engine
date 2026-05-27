@@ -42,12 +42,15 @@ class LiveInvalidationPipeline:
             decisions.append(decision)
 
         invalidated = [d for d in decisions if d.invalidated]
-        payload = {
+        rows: list[dict[str, object]] = [
+            asdict(d) | {"as_of": d.as_of.isoformat()} for d in decisions
+        ]
+        payload: dict[str, object] = {
             "as_of": as_of.isoformat(),
             "total": len(decisions),
             "invalidated": len(invalidated),
             "active": len(decisions) - len(invalidated),
-            "rows": [asdict(d) | {"as_of": d.as_of.isoformat()} for d in decisions],
+            "rows": rows,
         }
 
         self.storage.save_json(
@@ -56,7 +59,7 @@ class LiveInvalidationPipeline:
             subdir="signals",
         )
         self.storage.save_rows_csv(
-            rows=payload["rows"],
+            rows=rows,
             filename=f"live_invalidation_{run_label}.csv",
             subdir="signals",
         )

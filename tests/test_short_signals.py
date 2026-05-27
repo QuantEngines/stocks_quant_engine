@@ -79,6 +79,50 @@ class TestShortScorer:
             f"Expected bullish features to produce short score <= 50, got {result.total_score:.2f}"
         )
 
+    def test_neutral_symmetric_text_is_not_treated_as_bearish(self):
+        scorer = ShortScorer()
+        result = scorer.score(
+            {
+                "sentiment_score_recent": 0.0,
+                "news_sentiment": 0.0,
+                "management_tone_score": 0.0,
+                "event_risk_score": 0.0,
+                "governance_flag_score": 0.0,
+                "uncertainty_penalty": 0.0,
+                "recent_negative_event_score": 0.0,
+            }
+        )
+        text_category = next(c for c in result.categories if c.name == "negative_text_signals")
+        assert text_category.score_0_1 <= 0.25
+
+    def test_negative_symmetric_text_increases_short_score(self):
+        scorer = ShortScorer()
+        bearish = scorer.score(
+            {
+                "sentiment_score_recent": -1.0,
+                "news_sentiment": -1.0,
+                "management_tone_score": -1.0,
+                "event_risk_score": 0.0,
+                "governance_flag_score": 0.0,
+                "uncertainty_penalty": 0.0,
+                "recent_negative_event_score": 0.0,
+            }
+        )
+        bullish = scorer.score(
+            {
+                "sentiment_score_recent": 1.0,
+                "news_sentiment": 1.0,
+                "management_tone_score": 1.0,
+                "event_risk_score": 0.0,
+                "governance_flag_score": 0.0,
+                "uncertainty_penalty": 0.0,
+                "recent_negative_event_score": 0.0,
+            }
+        )
+        bearish_text = next(c for c in bearish.categories if c.name == "negative_text_signals")
+        bullish_text = next(c for c in bullish.categories if c.name == "negative_text_signals")
+        assert bearish_text.score_0_1 > bullish_text.score_0_1
+
     def test_bearish_score_higher_than_bullish_score(self):
         scorer = ShortScorer()
         bearish_score = scorer.score(BEARISH_FEATURES).total_score

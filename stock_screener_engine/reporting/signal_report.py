@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import date
-from typing import Iterable, Mapping
+from typing import Any, Iterable, Mapping, cast
 
 from stock_screener_engine.core.entities import FeatureVector, ScoreCard, SignalResult
 
@@ -282,36 +282,35 @@ def build_signal_report(
 
 
 def render_signal_markdown(report: ProfessionalSignalReport) -> str:
-    payload = report.to_dict()
-    ident = payload["identity"]
-    summary = payload["summary"]
-    peer_context = payload["peer_context"]
-    explanation = payload["explanation"]
+    ident = report.identity
+    summary = report.summary
+    peer_context = report.peer_context
+    explanation = report.explanation
     lines = [
-        f"# {ident['symbol']} Signal Report",
+        f"# {ident.symbol} Signal Report",
         "",
-        f"Sector: {ident['sector']}",
-        f"Signal: {summary['signal_type']} | Category: {summary['category']} | Rank: {summary['rank']}",
-        f"Final Score: {summary['final_score']} | Long: {summary['long_term_score']} | Swing: {summary['swing_score']} | Risk: {summary['risk_penalty']}",
-        f"Confidence: {summary['confidence']} | Horizon: {summary['horizon']}",
+        f"Sector: {ident.sector}",
+        f"Signal: {summary.signal_type} | Category: {summary.category} | Rank: {summary.rank}",
+        f"Final Score: {summary.final_score} | Long: {summary.long_term_score} | Swing: {summary.swing_score} | Risk: {summary.risk_penalty}",
+        f"Confidence: {summary.confidence} | Horizon: {summary.horizon}",
         "",
         "## Drivers",
-        *[f"- {item}" for item in explanation["top_positive_drivers"]],
+        *[f"- {item}" for item in explanation.top_positive_drivers],
         "",
         "## Risks",
-        *[f"- {item}" for item in explanation["top_negative_drivers"]],
+        *[f"- {item}" for item in explanation.top_negative_drivers],
         "",
         "## Peer Context",
-        f"Valuation position: {peer_context['valuation_position']}",
-        str(peer_context["valuation_note"]),
+        f"Valuation position: {peer_context.valuation_position}",
+        str(peer_context.valuation_note),
         "",
         "## Thesis",
-        str(explanation["why_selected"]),
+        str(explanation.why_selected),
         "",
         "## Invalidation",
-        str(explanation["invalidation_logic"]),
+        str(explanation.invalidation_logic),
     ]
-    warnings = explanation["missing_data_warnings"]
+    warnings = explanation.missing_data_warnings
     if warnings:
         lines.extend(["", "## Missing Data", *[f"- {item}" for item in warnings]])
     return "\n".join(lines)
@@ -357,7 +356,7 @@ def _optional_str(value: object) -> str | None:
 
 def _market_cap_category(value: object) -> str:
     try:
-        market_cap = float(value)
+        market_cap = float(cast(Any, value))
     except (TypeError, ValueError):
         return "unavailable"
     if market_cap >= 1_000_000_000_000:

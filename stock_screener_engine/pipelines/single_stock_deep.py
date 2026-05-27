@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
-from typing import Sequence
+from typing import Sequence, cast
 
 from stock_screener_engine.config.settings import AppSettings
 from stock_screener_engine.core.engine import ResearchEngine
-from stock_screener_engine.core.entities import StockSnapshot
+from stock_screener_engine.core.entities import FeatureVector, ScoreCard, SignalResult, StockSnapshot
 from stock_screener_engine.core.technical_indicators import atr, adx, momentum
 from stock_screener_engine.data_sources.base.interfaces import (
     FinancialsProvider,
@@ -540,11 +540,16 @@ class SingleStockPipeline:
         raw = engine.run(symbols=[symbol], regime_score=None)
 
         # ── 5. Extract core outputs ───────────────────────────────────────
-        features_vec  = raw["features"][0]  if raw.get("features")      else None
-        scorecard     = raw["scores"][0]    if raw.get("scores")         else None
-        long_signal   = raw["long_signals"][0]  if raw.get("long_signals")  else None
-        swing_signal  = raw["swing_signals"][0] if raw.get("swing_signals") else None
-        short_signal  = raw["short_signals"][0] if raw.get("short_signals") else None
+        features = cast(list[FeatureVector], raw.get("features") or [])
+        scores = cast(list[ScoreCard], raw.get("scores") or [])
+        long_signals = cast(list[SignalResult], raw.get("long_signals") or [])
+        swing_signals = cast(list[SignalResult], raw.get("swing_signals") or [])
+        short_signals = cast(list[SignalResult], raw.get("short_signals") or [])
+        features_vec = features[0] if features else None
+        scorecard = scores[0] if scores else None
+        long_signal = long_signals[0] if long_signals else None
+        swing_signal = swing_signals[0] if swing_signals else None
+        short_signal = short_signals[0] if short_signals else None
 
         features_dict: dict[str, float] = dict(features_vec.values) if features_vec else {}
         comp_scores:   dict[str, float] = dict(scorecard.component_scores) if scorecard else {}
@@ -591,8 +596,9 @@ class SingleStockPipeline:
             raw_headlines = []
 
         # ── 9. NLP-derived text features ────────────────────────────────
+        text_feature_rows = cast(list[dict[str, object]], raw.get("text_features") or [])
         text_row: dict[str, object] = next(
-            (r for r in raw.get("text_features", []) if r.get("symbol") == symbol),
+            (r for r in text_feature_rows if r.get("symbol") == symbol),
             {},
         )
         text_features = {k: round(v, 4) for k, v in text_row.items() if k != "symbol" and isinstance(v, (int, float))}

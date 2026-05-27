@@ -159,7 +159,7 @@ class MarketDataStore:
         self.conn.commit()
 
     def upsert_security_master(self, records: Iterable[SecurityMasterRecord]) -> int:
-        rows = list(records)
+        rows = [self._merge_security_master_record(record) for record in records]
         self.conn.executemany(
             """
             INSERT OR REPLACE INTO security_master(
@@ -188,6 +188,31 @@ class MarketDataStore:
         )
         self.conn.commit()
         return len(rows)
+
+    def _merge_security_master_record(self, record: SecurityMasterRecord) -> SecurityMasterRecord:
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT * FROM security_master WHERE symbol = ? AND exchange = ?",
+            (record.symbol.strip().upper(), record.exchange.strip().upper()),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return record
+
+        existing = _security_from_row(row)
+        return replace(
+            record,
+            isin=_prefer_rich_text(record.isin, existing.isin),
+            series=_prefer_rich_text(record.series, existing.series),
+            company_name=_prefer_company_name(record.company_name, existing.company_name, record.symbol),
+            sector=_prefer_rich_text(record.sector, existing.sector),
+            industry=_prefer_rich_text(record.industry, existing.industry),
+            listing_date=record.listing_date or existing.listing_date,
+            delisting_date=record.delisting_date or existing.delisting_date,
+            lot_size=record.lot_size if record.lot_size != 1 else existing.lot_size,
+            tick_size=record.tick_size if record.tick_size != 0.05 else existing.tick_size,
+            source=_prefer_security_source(record.source, existing.source),
+        )
 
     def get_security_master(self, symbols: Sequence[str] | None = None) -> list[SecurityMasterRecord]:
         cur = self.conn.cursor()
@@ -320,10 +345,10 @@ class MarketDataStore:
             query += " AND venue = ?"
             params.append(venue.upper())
         if start:
-            query += " AND ts >= ?"
+            query += " AND substr(ts, 1, 10) >= ?"
             params.append(start.isoformat())
         if end:
-            query += " AND ts <= ?"
+            query += " AND substr(ts, 1, 10) <= ?"
             params.append(end.isoformat())
         query += " ORDER BY ts"
         cur = self.conn.cursor()
@@ -660,7 +685,7 @@ class MarketDataStore:
             """
             SELECT symbol, COUNT(*) AS n, MIN(ts) AS min_ts, MAX(ts) AS max_ts
             FROM ohlcv_bars
-            WHERE interval = ? AND ts BETWEEN ? AND ?
+            WHERE interval = ? AND substr(ts, 1, 10) BETWEEN ? AND ?
             GROUP BY symbol
             """,
             (interval, start.isoformat(), end.isoformat()),
@@ -744,6 +769,28 @@ def _parse_ratio(value: str | None) -> tuple[float, float] | None:
 
 def _date_or_none(value: date | None) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def _prefer_rich_text(incoming: str, existing: str) -> str:
+    return existing if _is_placeholder_text(incoming) and not _is_placeholder_text(existing) else incoming
+
+
+def _prefer_company_name(incoming: str, existing: str, symbol: str) -> str:
+    if incoming.strip().upper() == symbol.strip().upper() and not _is_placeholder_text(existing):
+        return existing
+    return _prefer_rich_text(incoming, existing)
+
+
+def _is_placeholder_text(value: str | None) -> bool:
+    if value is None:
+        return True
+    return value.strip().upper() in {"", "UNKNOWN", "NA", "N/A", "NONE", "NULL"}
+
+
+def _prefer_security_source(incoming: str, existing: str) -> str:
+    if incoming == "runtime_universe" and existing and existing != "runtime_universe":
+        return existing
+    return incoming
 
 
 def _parse_date(value: str | None) -> date | None:

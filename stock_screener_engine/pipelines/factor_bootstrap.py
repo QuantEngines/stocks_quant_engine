@@ -6,7 +6,7 @@ import csv
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Mapping, Sequence, cast
 
 from stock_screener_engine.config.settings import AppSettings
 from stock_screener_engine.data_sources.financials.ingestion import FinancialStatementIngestor
@@ -147,9 +147,9 @@ class FactorBootstrapPipeline:
             "shareholding": self.store.shareholding_coverage(normalized_symbols, as_of=as_of, venue=canonical_venue),
         }
         coverage_values = [
-            float(coverage["financials"].get("coverage") or 0.0),
-            float(coverage["valuations"].get("coverage") or 0.0),
-            float(coverage["shareholding"].get("coverage") or 0.0),
+            _coverage_value(coverage["financials"]),
+            _coverage_value(coverage["valuations"]),
+            _coverage_value(coverage["shareholding"]),
         ]
         report = {
             "pipeline": "factor_bootstrap_ingest",
@@ -355,6 +355,10 @@ def _load_factor_rows(root: Path, subdir: str, combined_filename: str) -> list[d
                     row["symbol"] = path.stem.upper()
                 rows.append(row)
     return rows
+
+
+def _coverage_value(report: Mapping[str, object]) -> float:
+    return float(cast(Any, report.get("coverage") or 0.0))
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
 
@@ -63,9 +64,9 @@ def main(argv: list[str] | None = None) -> None:
     sector_report.add_argument("--format", choices=["json", "markdown"], default="json")
     _add_source_arg(sector_report)
 
-    sector_rankings = subparsers.add_parser("sector-rankings", help="Rank all covered sectors")
-    sector_rankings.add_argument("--format", choices=["json", "markdown"], default="json")
-    _add_source_arg(sector_rankings)
+    sector_rankings_cmd = subparsers.add_parser("sector-rankings", help="Rank all covered sectors")
+    sector_rankings_cmd.add_argument("--format", choices=["json", "markdown"], default="json")
+    _add_source_arg(sector_rankings_cmd)
 
     peer_report = subparsers.add_parser("peer-report", help="Build canonical peer-comparison report")
     peer_report.add_argument("symbol")
@@ -226,9 +227,12 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "sector-report":
         result = run_sector_rankings(config_path=config_path)
+        rankings_payload = result.get("sector_rankings", [])
+        sector_rankings = rankings_payload if isinstance(rankings_payload, list) else []
         reports = [
             report
-            for report in result["sector_rankings"]
+            for report in sector_rankings
+            if isinstance(report, Mapping)
             if str(report.get("sector", "")).lower() == args.sector.lower()
         ]
         peer_payload = None
@@ -443,12 +447,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "explain":
         result = run_deepdive_report(args.symbol, config_path=config_path, output_format="json")
+        source_analysis = _mapping(result.get("source_analysis"))
+        key_drivers = _mapping(source_analysis.get("key_drivers"))
         explanation = {
             "symbol": result["symbol"],
             "final_verdict": result["final_verdict"],
-            "top_positive": result["source_analysis"].get("key_drivers", {}).get("top_positive", []),
-            "top_negative": result["source_analysis"].get("key_drivers", {}).get("top_negative", []),
-            "risk_flags": result["source_analysis"].get("risk_flags", []),
+            "top_positive": key_drivers.get("top_positive", []),
+            "top_negative": key_drivers.get("top_negative", []),
+            "risk_flags": source_analysis.get("risk_flags", []),
         }
         _emit(explanation)
         return
@@ -501,6 +507,10 @@ def _parse_symbols(text: str) -> list[str] | None:
 def _parse_int_csv(text: str) -> list[int]:
     values = [int(part.strip()) for part in text.split(",") if part.strip()]
     return values or [5, 20, 60]
+
+
+def _mapping(value: object) -> Mapping[str, object]:
+    return value if isinstance(value, Mapping) else {}
 
 
 def _resolve_date_range(args: argparse.Namespace, parser: argparse.ArgumentParser) -> tuple[date, date]:

@@ -62,6 +62,42 @@ def test_market_data_store_lists_active_sector_peers_and_metadata(tmp_path) -> N
         store.close()
 
 
+def test_security_master_runtime_placeholders_do_not_overwrite_rich_metadata(tmp_path) -> None:
+    store = MarketDataStore(str(tmp_path / "market.db"))
+    try:
+        store.upsert_security_master(
+            [
+                SecurityMasterRecord(
+                    symbol="AAA",
+                    company_name="AAA Ltd",
+                    sector="Information Technology",
+                    industry="Software",
+                    source="universe_file",
+                )
+            ]
+        )
+        store.upsert_security_master(
+            [
+                SecurityMasterRecord(
+                    symbol="AAA",
+                    company_name="AAA",
+                    sector="Unknown",
+                    industry="Unknown",
+                    source="runtime_universe",
+                )
+            ]
+        )
+
+        record = store.get_security_master(["AAA"])[0]
+
+        assert record.company_name == "AAA Ltd"
+        assert record.sector == "Information Technology"
+        assert record.industry == "Software"
+        assert record.source == "universe_file"
+    finally:
+        store.close()
+
+
 def test_store_returns_split_adjusted_history(tmp_path) -> None:
     store = MarketDataStore(str(tmp_path / "market.db"))
     try:
@@ -89,6 +125,34 @@ def test_store_returns_split_adjusted_history(tmp_path) -> None:
         assert adjusted[0].close == 50.0
         assert adjusted[0].volume == 2000.0
         assert adjusted[1].close == 50.0
+    finally:
+        store.close()
+
+
+def test_ohlcv_date_filters_include_timezone_stamped_end_date(tmp_path) -> None:
+    store = MarketDataStore(str(tmp_path / "market.db"))
+    try:
+        store.upsert_ohlcv(
+            [
+                OHLCVBar(
+                    "NSE",
+                    "AAA",
+                    "2026-05-27T00:00:00+05:30",
+                    100.0,
+                    101.0,
+                    99.0,
+                    100.5,
+                    1000.0,
+                )
+            ]
+        )
+
+        bars = store.get_ohlcv("AAA", start=date(2026, 5, 27), end=date(2026, 5, 27))
+        coverage = store.coverage_summary(["AAA"], start=date(2026, 5, 27), end=date(2026, 5, 27))
+
+        assert len(bars) == 1
+        assert coverage["coverage"] == 1.0
+        assert coverage["rows_by_symbol"]["AAA"]["n"] == 1
     finally:
         store.close()
 

@@ -50,10 +50,16 @@ class _EnabledBroker:
 
 
 def test_broker_market_data_provider_builds_market_only_snapshot() -> None:
-    provider = BrokerMarketDataProvider(_EnabledBroker(), universe=["RELIANCE"], broker_name="dummy")
+    provider = BrokerMarketDataProvider(
+        _EnabledBroker(),
+        universe=["RELIANCE"],
+        broker_name="dummy",
+        security_metadata={"RELIANCE": {"sector": "Energy"}},
+    )
     snapshots = provider.get_snapshots(["RELIANCE"])
 
     assert len(snapshots) == 1
+    assert snapshots[0].sector == "Energy"
     assert snapshots[0].close == 2500.0
     assert snapshots[0].pe_ratio == 0.0
     assert snapshots[0].roe == 0.0

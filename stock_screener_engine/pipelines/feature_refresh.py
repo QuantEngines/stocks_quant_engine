@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 from stock_screener_engine.config.settings import AppSettings
 from stock_screener_engine.core.engine import ResearchEngine
+from stock_screener_engine.core.entities import FeatureVector
 from stock_screener_engine.data_sources.base.interfaces import (
     FinancialsProvider,
     MarketDataProvider,
@@ -35,14 +37,14 @@ class FeatureRefreshPipeline:
         self.file_store = LocalFileStorage(settings.storage.root_dir)
         self.sqlite = SQLiteStore(settings.storage.sqlite_path)
 
-    def run(self, symbols: list[str] | None = None) -> list:
+    def run(self, symbols: list[str] | None = None) -> list[FeatureVector]:
         logger.info("Refreshing feature store")
         output = self.engine.run(symbols=symbols, regime_score=None)
         quality_report = build_pipeline_quality_report(output, "feature_refresh")
         self.file_store.save_json(quality_report, filename="feature_refresh_quality_report.json", subdir="quality")
         if not quality_report["passed"]:
             raise RuntimeError("Feature refresh blocked by data quality issues")
-        features = output["features"]
+        features = cast(list[FeatureVector], output["features"])
         self.file_store.save_features(features, filename="refreshed_features.csv")
         self.sqlite.upsert_features(features)
         return features

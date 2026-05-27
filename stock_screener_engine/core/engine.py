@@ -6,6 +6,7 @@ import json
 import logging
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
+from typing import cast
 
 from stock_screener_engine.config.settings import AppSettings
 from stock_screener_engine.backtest.calibration import (
@@ -136,7 +137,7 @@ class ResearchEngine:
         self.portfolio_adapter = PortfolioConstructionAdapter()
         self.quality = DataQualityChecker()
 
-    def run(self, symbols: list[str] | None = None, regime_score: float | None = None) -> dict[str, list]:
+    def run(self, symbols: list[str] | None = None, regime_score: float | None = None) -> dict[str, object]:
         run_at = datetime.utcnow().isoformat() + "Z"
         symbols = symbols or self.market_data.get_universe()
         symbols_requested = len(symbols)
@@ -165,7 +166,7 @@ class ResearchEngine:
             logger.warning("Snapshot quality issues: %s", snapshot_quality.issues)
         freshness_quality = self._provider_freshness_report(symbols)
 
-        selected = self.universe_selector.select(snapshots)
+        selected = cast(list[StockSnapshot], self.universe_selector.select(snapshots))
         symbols_selected = len(selected)
         features, sector_map, text_feature_rows = self._compute_features(selected, regime_score=regime_score)
         symbols_with_features = len(features)

@@ -95,14 +95,21 @@ scoring:
 ```
 data_sources/
   market/
-    mock_market_data.py         # MockIndianMarketDataProvider
-    mock_fundamentals.py        # MockFinancialsProvider
+    mock_market_data.py         # deterministic test/dev provider
+    sqlite_market_data_provider.py
+    yfinance_market_data_provider.py
+    broker_market_data_provider.py
+  financials/
+    sqlite_financials_provider.py
   filings/
-    mock_filings.py             # MockFilingsProvider
+    exchange_filings_provider.py
+    mock_filings.py
   news/
-    mock_news.py                # MockNewsProvider
+    free_news_provider.py
+    mock_news.py
   exchange/
-    nse_adapter.py              # NSEExchangeAdapter (implements ExchangeAdapter)
+    nse_http_adapter.py
+    bse_http_adapter.py
   broker/
     zerodha_adapter.py          # disabled by default
     breeze_adapter.py           # disabled by default
@@ -198,7 +205,7 @@ stock_screener_engine/
   config/             YAML + env settings, ScoringWeightsSettings
   core/
     entities.py       MarketSnapshot, FundamentalsSnapshot, GovernanceSnapshot, ...
-    feature_specs.py  Named constants for all 20 feature keys
+    feature_specs.py  Named constants for feature keys
     features.py       FeatureEngine with independent category methods
     scoring.py        LongTermScorer, SwingScorer, configurable weights dataclasses
     explainability.py ExplanationEngine (single _top_components helper, no duplicates)
@@ -208,48 +215,46 @@ stock_screener_engine/
     ranking.py        rank_by_long_term, rank_by_swing
   data_sources/
     base/interfaces.py  All provider + adapter ABCs
-    market/           mock_market_data, mock_fundamentals
-    filings/          mock_filings
-    news/             mock_news
-    exchange/         NSEExchangeAdapter (implements ExchangeAdapter)
-    text/             MockTextEventProvider
+    market/           mock, canonical SQLite, HTTP, yfinance, broker-backed providers
+    financials/       point-in-time SQLite provider and ingestion
+    filings/          exchange, mock, and null filing providers
+    news/             free RSS, generic, and mock providers
+    exchange/         NSE/BSE HTTP ingestion adapters
+    text/             text event providers
     broker/           Zerodha + Breeze (disabled by default)
+  documents/          local document loading, classification, fact/commentary extraction
+  llm/                optional validated LLM extraction and provider adapters
   models/
     protocols.py      ScorerProtocol
     long_term_model.py  LongTermModel.with_weights(...)
     swing_model.py    SwingModel.with_weights(...)
-  pipelines/          data_collection, daily_batch, feature_refresh, intraday_update, signal_generation
-  storage/            local_files, sqlite_store (dedup-safe)
+  pipelines/          data, document, backtest, signal, calibration, and daily workflows
+  research/           company deep-dive and peer-comparison report packages
+  reporting/          professional signal reports
+  sector/             sector intelligence and peer leader views
+  storage/            local files, signal SQLite, canonical market data store
   execution/          order abstraction, execution router
-  backtest/           cross_sectional, walk_forward, event_study scaffolds
-  monitoring/         data_quality, health, signal_drift
+  backtest/           labels, ranking evaluation, costs, event study, calibration
+  monitoring/         data quality, factor quality, invalidation, reconciliation, drift
 examples/             run_demo.py
-tests/
-  conftest.py         shared fixtures (AppSettings, FeatureVector, snapshots, ScoreCard)
-  test_features.py    FeatureEngine — granular path + StockSnapshot compat
-  test_scoring.py     configurable weights, risk flags, edge cases
-  test_explainability.py  ExplanationEngine + _pretty_name regression
-  test_universe.py    UniverseSelector liquidity filter
-  test_engine_pipeline.py  end-to-end ResearchEngine
-  test_config.py      settings loading and env overlay
-  test_broker_optional.py  broker graceful-failure
+tests/                offline unit and integration tests
 ```
 
 ---
 
 ## Quick Start
 
-**Requirements**: Python 3.9+
+**Requirements**: Python 3.11 from the shared Quant Engines environment.
 
 ```bash
-# 1. Create and activate a virtual environment
-python -m venv .venv && source .venv/bin/activate
+# 1. From this repo, activate the shared environment one folder up
+source ../.venv/bin/activate
 
-# 2. Install the package in editable mode
-pip install -e .
+# 2. Install the package into the shared environment
+python -m pip install -e ".[all]"
 
 # Optional: Yahoo Finance and broker SDK data sources
-pip install -e ".[market,broker]"
+python -m pip install -e ".[market,broker]"
 
 # 3. Optionally copy the env template
 cp .env.example .env
@@ -276,6 +281,12 @@ mkdir -p "$SSE_STORAGE_ROOT/universe"
 ```
 
 `README.md` is the only documentation-style file intended to live in git.
+Local planning, architecture notes, and dated reviews live under the ignored
+`documentation/` folder.
+
+This repository should not have its own project-specific virtual environment for
+normal development. The canonical runtime is `../.venv`, shared by the sibling
+quant engines so integration work can converge on one portfolio-manager stack.
 
 ---
 
@@ -446,7 +457,8 @@ SSE_BREEZE_SESSION_TOKEN=...
 ## Running Tests
 
 ```bash
-pytest -q
+source ../.venv/bin/activate
+python -m pytest -q
 ```
 
 All tests are offline — no network calls, no broker credentials required.
@@ -454,9 +466,9 @@ All tests are offline — no network calls, no broker credentials required.
 ## Setup And Run Commands
 
 ```bash
-# create env + install
-python -m venv .venv && source .venv/bin/activate
-pip install -e .
+# activate shared Quant Engines env + install
+source ../.venv/bin/activate
+python -m pip install -e ".[all]"
 
 # run main demo
 python examples/run_demo.py
@@ -468,7 +480,7 @@ python examples/scoring_framework_demo.py
 python examples/llm_event_intelligence_demo.py
 
 # run tests
-pytest -q
+python -m pytest -q
 ```
 
 ## CLI Commands
@@ -661,73 +673,30 @@ satisfies `ScorerProtocol`.  Pass it as `scorer=...` to `LongTermModel` or
 
 ---
 
-## Future Roadmap
+## Current Verification And Roadmap
 
-- Real NSE/BSE ingest adapters (bhavcopy, SEBI filings API)
-- Financial statement parser with quality checks (Ind AS awareness)
-- Transcript / news ingestion with transformer-based event extraction
-- Portfolio and risk overlays + execution simulation
-- ML ranker training pipeline and model registry
-- Signal drift monitoring dashboards + alerting
+Verified locally on 2026-05-25:
 
+- `../.venv/bin/python -m pytest -q`: 210 passing tests
+- `../.venv/bin/python -m ruff check .`: passes
+- `../.venv/bin/python -m mypy stock_screener_engine`: passes
+- `../.venv/bin/stock-engine --help` works from outside this repo
 
+Recent maintenance:
 
----
+- Consolidated local docs under ignored `documentation/`.
+- Fixed `.gitignore` so local research artifacts stay ignored but the source package `stock_screener_engine/research/` can be tracked.
+- Corrected short-score handling for symmetric text features so neutral sentiment is not treated as bearish.
+- Aligned this repo with the shared parent Quant Engines Python 3.11 environment.
+- Cleared the full package type-checking gate under the shared environment.
 
-## Recent Improvements (March 2026)
+Highest-priority roadmap:
 
-### Architecture & Code Quality Enhancements
-
-#### 1. Extended Feature System
-- Added 8 new raw-ratio and technical features: `pe_ratio`, `pb_ratio`, `debt_to_equity`, `cfo_pat_ratio`, `price_acceleration`, `breakout_score`, `compression_score`, `activity_vs_avg`
-- Scorers now receive both normalised features (for consistency) and raw values (for flexible rescoring)
-- All 35+ features organised into typed frozensets (`FUNDAMENTAL_FEATURES`, `TECHNICAL_FEATURES`, `TEXT_FEATURES`, etc.) for validation and subsetting
-- Feature specs fully typed with constants (no magic strings anywhere)
-
-#### 2. Signal Output Schema Enrichment
-- `RankedSignal` schema expanded with: `risk_flags` (list), `sector` (str), `invalidation_notes` (list), `regime` (str)
-- Added `to_dict()` method for JSON serialisation in reports and APIs
-- Driver explanations now show category-aware human-readable labels (e.g., "Earnings & Revenue Growth Trajectory") instead of just metric names
-- Positive/negative driver format standardised: "Positive driver: ..." and "Risk flag: ..."
-
-#### 3. Evaluation Framework Hardening
-- **CrossSectionalBacktester**: Added Spearman information coefficient (IC) computation + IC t-statistic testing
-- **CrossSectionalBacktester**: Annualised information ratio (IR) for top-quintile returns
-- **EventStudy**: Cumulative abnormal returns (CAR) + paired t-statistic for win-rate statistical testing
-- **WalkForwardPlanner**: Typed `WalkForwardResult` dataclass with per-window IC tracking, `mean_ic()`, `ic_stability()` aggregators
-- All evaluation metrics designed for continuous monitoring and adaptive rebalancing
-
-#### 4. Monitoring & Drift Detection
-- **SignalDriftMonitor**: Now tracks score distribution snapshots (mean, std, p25, median, p75)
-- Detects mean/std/median shifts across rolling lookback windows
-- Configurable thresholds for early alert on distribution anomalies
-- Foundation ready for KL-divergence and quintile-shift detection (future)
-
-#### 5. Data Source Flexibility
-- **UniverseSelector**: Accepts both `MarketSnapshot` (typed, granular — preferred) and `StockSnapshot` (legacy compat)
-- Union type signature `AnySnapshot = Union[MarketSnapshot, StockSnapshot]` enables incremental migration
-- Added `select_symbols()` convenience method for filtering by symbol only
-
-#### 6. Enhanced Normalisation Helpers
-- `percentile_rank(value, population) -> float` — cross-sectional relative ranking [0,1]
-- `log_score(value, low, high) -> float` — log-scale normalisation for right-skewed distributions (volume, market-cap)
-- Both maintain [0,1] contract for seamless feature-engine integration
-
-### Testing & Validation Status
-- **85 core tests passing** (all new features validated)
-- Feature range expectations relaxed to allow raw-ratio features (outside [0,1] is intentional and well-documented)
-- Verification suite (`tools/_verify_patches.py`) validates end-to-end: feature emission, signal schemas, evaluation metrics
-- New drivers show contextual category labels and human-readable explanations
-
-### Pre-Existing Test Failures (Not Caused by These Improvements)
-- `test_single_stock_pipeline.py` and `TestDirectionalVerdicts` failures due to optional `yfinance` dependency not installed
-- These failures existed before the improvements and are independent of the refactoring work
-- Easy fix: `pip install yfinance` restores these tests to passing state
-
-### Recommended Next Steps for Production Readiness
-1. **ML Feature Importance** — train LightGBM ranker on historical IC, feature importance analysis
-2. **Regime Classification** — market state detector (bull/bear/transition) from macro volatility + cross-sectional spread
-3. **Real-Time Invalidation** — monitor live events and revert flagged signals when catalyst assumptions break
-4. **Full Broker Integration** — execution layer with commission costing, slippage simulation
-5. **Distributed IC Analysis** — compute walk-forward IC by sector/factor for adaptive weight tuning
-6. **Performance Attribution** — decompose returns into alpha (signal skill), beta (market beta), residual factor tilts
+1. Add lineage metadata to features, scores, reports, calibration rows, and backtest rows.
+2. Populate external point-in-time Nifty 50 fundamentals, valuation, shareholding, and corporate-action data.
+3. Upgrade walk-forward evaluation from planner scaffolding to a full rolling train/test harness.
+4. Add mandatory bias audit reports for survivorship, look-ahead, stale data, universe drift, and factor coverage.
+5. Build an event-driven backtester with fills, costs, slippage, corporate actions, stops, and live invalidation events.
+6. Add sector-specific factor packs and evaluate them separately before global weighting.
+7. Add model governance for any trained ranker: version, feature set, training window, validation metrics, calibration date, and fallback behavior.
+8. Keep broker execution paper-only until risk controls, audit trails, reconciliation, and current regulatory/broker checks are complete.

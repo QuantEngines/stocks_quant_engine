@@ -104,7 +104,14 @@ class SQLiteStore:
         from datetime import date as _date
 
         run_date = _date.today().isoformat()
+        rows = list(signals)
         cur = self.conn.cursor()
+        for signal in rows:
+            operator, category_value = _signal_category_family_filter(signal.category)
+            cur.execute(
+                f"DELETE FROM signals WHERE symbol = ? AND run_date = ? AND category {operator} ?",
+                (signal.symbol, run_date, category_value),
+            )
         cur.executemany(
             """
             INSERT OR REPLACE INTO signals(symbol, category, run_date, score, explanation)
@@ -130,10 +137,18 @@ class SQLiteStore:
                         }
                     ),
                 )
-                for s in signals
+                for s in rows
             ],
         )
         self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
+
+
+def _signal_category_family_filter(category: str) -> tuple[str, str]:
+    lowered = category.lower()
+    for prefix in ("long_term_", "swing_", "short_"):
+        if lowered.startswith(prefix):
+            return "LIKE", f"{prefix}%"
+    return "=", category

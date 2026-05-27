@@ -6,6 +6,11 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
+# Local secrets
+.env
+.env.*
+!.env.example
+
 # Local artifacts
 .artifacts/
 artifacts/
@@ -23,6 +28,9 @@ data/
 # Out-of-scope documentation and report-style outputs
 documentation/
 docs/
+/documents/
+/plan/
+/plans/
 data/calibration/
 data/cleaned/
 data/features/
@@ -38,6 +46,12 @@ reports/
 audit/
 audits/
 notebooks/
+
+# Top-level research artifacts stay local, but the package code is source.
+!/stock_screener_engine/research/
+!/stock_screener_engine/research/**
+stock_screener_engine/research/**/__pycache__/
+stock_screener_engine/research/**/*.py[cod]
 
 # Document/report formats (README.md is explicitly re-included below)
 *.md

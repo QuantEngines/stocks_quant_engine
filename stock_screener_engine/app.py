@@ -7,10 +7,12 @@ import logging
 from dataclasses import asdict, replace
 from datetime import date
 from pathlib import Path
+from typing import cast
 
 from stock_screener_engine.config.settings import AppSettings, load_settings
 from stock_screener_engine.config.startup_validation import validate_startup_settings
 from stock_screener_engine.backtest.costs import IndianEquityCostModel
+from stock_screener_engine.core.entities import FeatureVector, ScoreCard, SignalResult
 from stock_screener_engine.data_sources.broker.factory import build_broker_adapters
 from stock_screener_engine.data_sources.filings.exchange_filings_provider import ExchangeFilingsProvider
 from stock_screener_engine.data_sources.filings.null_filings_provider import NullFilingsProvider
@@ -63,7 +65,7 @@ def configure_logging(level: str) -> None:
     )
 
 
-def run_daily(settings: AppSettings) -> dict[str, list]:
+def run_daily(settings: AppSettings) -> dict[str, object]:
     validate_startup_settings(settings)
     market = _build_market_provider(settings)
     financials = _build_financials_provider(settings)
@@ -82,7 +84,7 @@ def run_daily(settings: AppSettings) -> dict[str, list]:
         pipeline.close()
 
 
-def run_intraday(settings: AppSettings) -> dict[str, list]:
+def run_intraday(settings: AppSettings) -> dict[str, object]:
     validate_startup_settings(settings)
     market = _build_market_provider(settings)
     financials = _build_financials_provider(settings)
@@ -123,23 +125,26 @@ def run_screen(config_path: str | None = None) -> dict[str, object]:
     daily = run_daily(settings)
     intraday = run_intraday(settings)
     brokers = summarize_brokers(settings)
-    report_symbols = [
-        fv.symbol for fv in daily.get("features", [])
-        if hasattr(fv, "symbol")
-    ]
+    features = cast(list[FeatureVector], daily.get("features", []))
+    scores = cast(list[ScoreCard], daily.get("scores", []))
+    long_signals = cast(list[SignalResult], daily.get("long_signals", []))
+    swing_signals = cast(list[SignalResult], daily.get("swing_signals", []))
+    short_signals_top = cast(list[SignalResult], daily.get("short_signals_top", []))
+    intraday_swing_signals = cast(list[SignalResult], intraday.get("swing_signals", []))
+    report_symbols = [fv.symbol for fv in features]
     company_metadata = _company_metadata_for_reports(settings, report_symbols)
     long_reports = build_signal_reports(
-        daily["features"],
-        daily["scores"],
-        daily["long_signals"],
+        features,
+        scores,
+        long_signals,
         signal_type="long_term",
         company_metadata=company_metadata,
         limit=10,
     )
     swing_reports = build_signal_reports(
-        daily["features"],
-        daily["scores"],
-        daily["swing_signals"],
+        features,
+        scores,
+        swing_signals,
         signal_type="swing",
         company_metadata=company_metadata,
         limit=10,
@@ -160,7 +165,7 @@ def run_screen(config_path: str | None = None) -> dict[str, object]:
                 "top_risks": s.explanation.top_negative_drivers[:2],
                 "entry_logic": s.explanation.entry_logic,
             }
-            for s in daily["long_signals"][:5]
+            for s in long_signals[:5]
         ],
         "daily_top_swing": [
             {
@@ -174,7 +179,7 @@ def run_screen(config_path: str | None = None) -> dict[str, object]:
                 "top_risks": s.explanation.top_negative_drivers[:2],
                 "entry_logic": s.explanation.entry_logic,
             }
-            for s in daily["swing_signals"][:5]
+            for s in swing_signals[:5]
         ],
         "daily_top_short": [
             {
@@ -189,7 +194,7 @@ def run_screen(config_path: str | None = None) -> dict[str, object]:
                 "entry_logic": s.explanation.entry_logic,
                 "invalidation_logic": s.explanation.invalidation_logic,
             }
-            for s in daily.get("short_signals_top", [])[:5]
+            for s in short_signals_top[:5]
         ],
         "intraday_top_swing": [
             {
@@ -199,7 +204,7 @@ def run_screen(config_path: str | None = None) -> dict[str, object]:
                 "category": s.category,
                 "conviction": round(s.explanation.confidence, 2),
             }
-            for s in intraday["swing_signals"][:5]
+            for s in intraday_swing_signals[:5]
         ],
         "professional_signal_reports": {
             "long_term": [report.to_dict() for report in long_reports],
@@ -624,44 +629,13 @@ def run_security_master_ingest(
     validate_startup_settings(settings)
     configure_logging(settings.log_level)
 
-    from stock_screener_engine.data_sources.schemas import SecurityMasterRecord
+    from stock_screener_engine.data_sources.security_master.csv_loader import load_security_master_csv
 
     csv_path = Path(file_path)
-    with csv_path.open("r", encoding="utf-8", newline="") as fh:
-        rows = list(csv.DictReader(fh))
-
     canonical_venue = (venue or settings.runtime_data.canonical_venue).strip().upper()
-    accepted: list[SecurityMasterRecord] = []
+    accepted = load_security_master_csv(str(csv_path), default_exchange=canonical_venue)
     rejected_rows = 0
     issues: list[dict[str, object]] = []
-    for idx, row in enumerate(rows, start=2):
-        try:
-            symbol = str(row.get("symbol") or row.get("tradingsymbol") or "").strip().upper()
-            if not symbol:
-                rejected_rows += 1
-                issues.append({"row": idx, "severity": "error", "message": "symbol is required"})
-                continue
-            exchange = str(row.get("exchange") or canonical_venue).strip().upper()
-            accepted.append(
-                SecurityMasterRecord(
-                    symbol=symbol,
-                    exchange=exchange,
-                    isin=str(row.get("isin") or "").strip(),
-                    series=str(row.get("series") or "EQ").strip() or "EQ",
-                    company_name=str(row.get("company_name") or row.get("name") or "").strip(),
-                    sector=str(row.get("sector") or "Unknown").strip() or "Unknown",
-                    industry=str(row.get("industry") or "Unknown").strip() or "Unknown",
-                    listing_date=_csv_optional_date(row.get("listing_date")),
-                    delisting_date=_csv_optional_date(row.get("delisting_date")),
-                    active=_csv_bool(row.get("active"), default=True),
-                    lot_size=_csv_int(row.get("lot_size"), default=1),
-                    tick_size=_csv_float(row.get("tick_size") or 0.05),
-                    source=str(row.get("source") or row.get("source_id") or "csv").strip() or "csv",
-                )
-            )
-        except ValueError as exc:
-            rejected_rows += 1
-            issues.append({"row": idx, "severity": "error", "message": str(exc)})
 
     persisted = 0
     if accepted:
@@ -1006,6 +980,7 @@ def _build_market_provider(settings: AppSettings):
             broker=ZerodhaAdapter(settings.integrations.zerodha),
             universe=settings.runtime_data.market_universe,
             broker_name="zerodha",
+            security_metadata=_load_canonical_security_metadata(settings),
         )
 
     if provider in {"icici", "breeze", "icici_breeze"}:
@@ -1016,6 +991,7 @@ def _build_market_provider(settings: AppSettings):
             broker=BreezeAdapter(settings.integrations.breeze),
             universe=settings.runtime_data.market_universe,
             broker_name="icici_breeze",
+            security_metadata=_load_canonical_security_metadata(settings),
         )
 
     if provider == "mock":
@@ -1024,6 +1000,17 @@ def _build_market_provider(settings: AppSettings):
         return MockIndianMarketDataProvider()
 
     raise ValueError(f"Unsupported market provider: {settings.runtime_data.market_provider}")
+
+
+def _load_canonical_security_metadata(settings: AppSettings) -> dict[str, dict[str, object]]:
+    sqlite_path = Path(settings.storage.sqlite_path)
+    if not sqlite_path.exists():
+        return {}
+    store = MarketDataStore(settings.storage.sqlite_path)
+    try:
+        return store.company_metadata(settings.runtime_data.market_universe)
+    finally:
+        store.close()
 
 
 def _build_financials_provider(settings: AppSettings):

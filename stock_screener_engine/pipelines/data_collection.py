@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import date, datetime
-from typing import Sequence
+from typing import Any, Sequence
 
 from stock_screener_engine.config.settings import AppSettings
 from stock_screener_engine.data_sources.base.interfaces import ExchangeIngestionAdapter, MarketIngestionAdapter
@@ -161,7 +161,7 @@ class DataCollectionPipeline:
         return corporate_actions, shareholding, announcements, errors
 
 
-def _record_rows(records: Sequence[object]) -> list[dict]:
+def _record_rows(records: Sequence[Any]) -> list[dict]:
     rows: list[dict] = []
     for record in records:
         row = asdict(record)

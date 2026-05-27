@@ -16,6 +16,12 @@ from stock_screener_engine.data_sources.schemas import OHLCVBar
 from stock_screener_engine.storage.market_data_store import MarketDataStore
 
 
+BACKTEST_DATASET_SCHEMA_VERSION = "backtest_dataset.v1"
+FORWARD_LABEL_FEATURE_VERSION = "forward_return_label.v1"
+TECHNICAL_SCORE_FEATURE_VERSION = "technical_ranking_score.v1"
+ENGINE_SCORE_FEATURE_VERSION = "engine_feature_stack.v1"
+
+
 @dataclass(frozen=True)
 class UniverseSelection:
     policy: str
@@ -35,6 +41,14 @@ class ForwardReturnLabel:
     close: float
     forward_close: float
     forward_return: float
+    run_id: str = ""
+    source_id: str = ""
+    source_timestamp: str = ""
+    ingested_at: str = ""
+    quality_status: str = "unvalidated"
+    schema_version: str = BACKTEST_DATASET_SCHEMA_VERSION
+    feature_version: str = FORWARD_LABEL_FEATURE_VERSION
+    model_version: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -46,12 +60,21 @@ class TechnicalScoreRow:
     symbol: str
     score: float
     components: Mapping[str, float]
+    run_id: str = ""
+    source_id: str = ""
+    source_timestamp: str = ""
+    ingested_at: str = ""
+    quality_status: str = "unvalidated"
+    schema_version: str = BACKTEST_DATASET_SCHEMA_VERSION
+    feature_version: str = TECHNICAL_SCORE_FEATURE_VERSION
+    model_version: str = "technical_ranking.v1"
 
     def to_flat_dict(self) -> dict[str, object]:
         return {
             "as_of": self.as_of,
             "symbol": self.symbol,
             "score": self.score,
+            **_lineage_to_dict(self),
             **{f"component_{key}": value for key, value in self.components.items()},
         }
 
@@ -68,6 +91,14 @@ class EngineScoreRow:
     risk_penalty: float
     conviction: float
     components: Mapping[str, float]
+    run_id: str = ""
+    source_id: str = ""
+    source_timestamp: str = ""
+    ingested_at: str = ""
+    quality_status: str = "unvalidated"
+    schema_version: str = BACKTEST_DATASET_SCHEMA_VERSION
+    feature_version: str = ENGINE_SCORE_FEATURE_VERSION
+    model_version: str = "engine_scoring.v1"
 
     def to_flat_dict(self) -> dict[str, object]:
         return {
@@ -80,8 +111,40 @@ class EngineScoreRow:
             "swing_score": self.swing_score,
             "risk_penalty": self.risk_penalty,
             "conviction": self.conviction,
+            **_lineage_to_dict(self),
             **{f"component_{key}": value for key, value in self.components.items()},
         }
+
+
+def _lineage_kwargs(lineage: Mapping[str, str]) -> dict[str, str]:
+    allowed = {
+        "run_id",
+        "source_id",
+        "source_timestamp",
+        "ingested_at",
+        "quality_status",
+        "schema_version",
+        "feature_version",
+        "model_version",
+    }
+    return {
+        key: str(value)
+        for key, value in lineage.items()
+        if key in allowed and value is not None
+    }
+
+
+def _lineage_to_dict(row: object) -> dict[str, str]:
+    return {
+        "run_id": str(getattr(row, "run_id", "")),
+        "source_id": str(getattr(row, "source_id", "")),
+        "source_timestamp": str(getattr(row, "source_timestamp", "")),
+        "ingested_at": str(getattr(row, "ingested_at", "")),
+        "quality_status": str(getattr(row, "quality_status", "")),
+        "schema_version": str(getattr(row, "schema_version", BACKTEST_DATASET_SCHEMA_VERSION)),
+        "feature_version": str(getattr(row, "feature_version", "")),
+        "model_version": str(getattr(row, "model_version", "")),
+    }
 
 
 class BacktestUniverseSelector:
@@ -162,6 +225,7 @@ class ForwardReturnLabelBuilder:
         start: date,
         end: date,
         horizons: Sequence[int],
+        lineage: Mapping[str, str] | None = None,
     ) -> list[ForwardReturnLabel]:
         labels: list[ForwardReturnLabel] = []
         horizon_values = sorted({int(h) for h in horizons if int(h) > 0})
@@ -177,7 +241,7 @@ class ForwardReturnLabelBuilder:
                 interval=self.interval,
                 adjusted=True,
             )
-            labels.extend(_labels_for_symbol(symbol, bars, horizon_values))
+            labels.extend(_labels_for_symbol(symbol, bars, horizon_values, lineage or {}))
         labels.sort(key=lambda row: (row.as_of, row.symbol, row.horizon))
         return labels
 
@@ -203,6 +267,7 @@ class TechnicalRankingDatasetBuilder:
         start: date,
         end: date,
         max_horizon: int,
+        lineage: Mapping[str, str] | None = None,
     ) -> list[TechnicalScoreRow]:
         rows: list[TechnicalScoreRow] = []
         for symbol in symbols:
@@ -214,7 +279,7 @@ class TechnicalRankingDatasetBuilder:
                 interval=self.interval,
                 adjusted=True,
             )
-            rows.extend(_technical_scores_for_symbol(symbol, bars, self.min_lookback, max_horizon))
+            rows.extend(_technical_scores_for_symbol(symbol, bars, self.min_lookback, max_horizon, lineage or {}))
         rows.sort(key=lambda row: (row.as_of, row.symbol))
         return rows
 
@@ -266,6 +331,7 @@ class EngineScoreDatasetBuilder:
         end: date,
         max_horizon: int,
         score_type: str = "swing",
+        lineage: Mapping[str, str] | None = None,
     ) -> list[EngineScoreRow]:
         normalized_score_type = score_type.strip().lower()
         if normalized_score_type not in {"swing", "long_term", "conviction"}:
@@ -281,7 +347,16 @@ class EngineScoreDatasetBuilder:
                 interval=self.interval,
                 adjusted=True,
             )
-            rows.extend(self._score_symbol(symbol, bars, sectors.get(symbol, "Unknown"), max_horizon, normalized_score_type))
+            rows.extend(
+                self._score_symbol(
+                    symbol,
+                    bars,
+                    sectors.get(symbol, "Unknown"),
+                    max_horizon,
+                    normalized_score_type,
+                    lineage or {},
+                )
+            )
         rows.sort(key=lambda row: (row.as_of, row.symbol))
         return rows
 
@@ -309,6 +384,7 @@ class EngineScoreDatasetBuilder:
         sector: str,
         max_horizon: int,
         score_type: str,
+        lineage: Mapping[str, str],
     ) -> list[EngineScoreRow]:
         rows: list[EngineScoreRow] = []
         if len(bars) < self.min_lookback + max_horizon + 1:
@@ -367,6 +443,7 @@ class EngineScoreDatasetBuilder:
                     risk_penalty=score_card.risk_penalty,
                     conviction=score_card.conviction,
                     components=score_card.component_scores,
+                    **_lineage_kwargs(lineage),
                 )
             )
         return rows
@@ -376,6 +453,7 @@ def _labels_for_symbol(
     symbol: str,
     bars: list[OHLCVBar],
     horizons: Sequence[int],
+    lineage: Mapping[str, str],
 ) -> list[ForwardReturnLabel]:
     labels: list[ForwardReturnLabel] = []
     closes = [bar.close for bar in bars]
@@ -397,6 +475,7 @@ def _labels_for_symbol(
                     close=bar.close,
                     forward_close=fwd_close,
                     forward_return=(fwd_close / bar.close) - 1.0,
+                    **_lineage_kwargs(lineage),
                 )
             )
     return labels
@@ -455,6 +534,7 @@ def _technical_scores_for_symbol(
     bars: list[OHLCVBar],
     min_lookback: int,
     max_horizon: int,
+    lineage: Mapping[str, str],
 ) -> list[TechnicalScoreRow]:
     rows: list[TechnicalScoreRow] = []
     if len(bars) < min_lookback + max_horizon + 1:
@@ -473,6 +553,7 @@ def _technical_scores_for_symbol(
                 symbol=symbol.strip().upper(),
                 score=score,
                 components=components,
+                **_lineage_kwargs(lineage),
             )
         )
     return rows

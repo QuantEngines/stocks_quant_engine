@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Iterable
+from typing import Any, Iterable, cast
 
 from stock_screener_engine.config.settings import BrokerIntegrationSettings
 from stock_screener_engine.data_sources.base.interfaces import OrderRequest
@@ -96,7 +96,9 @@ class ZerodhaAdapter(OptionalBrokerAdapterBase):
         clean = symbol.split(":", maxsplit=1)[-1].strip().upper()
         for row in self.get_instruments():
             if str(row.get("tradingsymbol", "")).strip().upper() == clean:
-                return int(row.get("instrument_token"))
+                token = row.get("instrument_token")
+                if token is not None:
+                    return int(token)
         raise RuntimeError(f"Zerodha instrument token not found for {symbol}")
 
 
@@ -117,8 +119,9 @@ def _kite_interval(interval: str) -> str:
 
 def _normalize_bar(row: dict) -> dict:
     ts = row.get("date") or row.get("timestamp") or row.get("datetime")
+    date_text = ts.isoformat() if ts is not None and hasattr(ts, "isoformat") else str(ts or "")
     return {
-        "date": ts.isoformat() if hasattr(ts, "isoformat") else str(ts or ""),
+        "date": date_text,
         "open": _safe_float(row.get("open")),
         "high": _safe_float(row.get("high")),
         "low": _safe_float(row.get("low")),
@@ -129,6 +132,6 @@ def _normalize_bar(row: dict) -> dict:
 
 def _safe_float(value: object) -> float:
     try:
-        return float(value) if value is not None else 0.0
+        return float(cast(Any, value)) if value is not None else 0.0
     except (TypeError, ValueError):
         return 0.0

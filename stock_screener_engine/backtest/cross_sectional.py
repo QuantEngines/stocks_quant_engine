@@ -43,7 +43,7 @@ class CrossSectionalBacktester:
         if n < 2:
             return CrossSectionalStats(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
-        scores = list(range(n, 0, -1))  # implicit rank: first element = highest score
+        scores = [float(rank) for rank in range(n, 0, -1)]  # first element = highest score
         return self.evaluate_panel(scores, returns_by_rank)
 
     def evaluate_panel(

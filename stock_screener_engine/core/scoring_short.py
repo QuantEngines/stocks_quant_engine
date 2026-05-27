@@ -98,15 +98,14 @@ class ShortScorer:
         )
 
     def _negative_text_signals(self, fa: FeatureAccessor) -> CategoryScore:
-        # Negative sentiment & high-risk events are bearish
-        neg_sent  = clamp(1.0 - fa.get("sentiment_score_recent", 0.5))
-        neg_news  = clamp(1.0 - fa.get("news_sentiment",         0.5))
+        # Symmetric text features use -1 bearish, 0 neutral, +1 bullish.
+        neg_sent  = _bearish_symmetric_score(fa, "sentiment_score_recent")
+        neg_news  = _bearish_symmetric_score(fa, "news_sentiment")
         event_risk = clamp(fa.get("event_risk_score",           0.0))
         gov_flag   = clamp(fa.get("governance_flag_score",       0.0))
         uncertainty = clamp(fa.get("uncertainty_penalty",        0.0))
         neg_events  = clamp(fa.get("recent_negative_event_score", 0.0))
-        # Negative management tone
-        mgmt_neg  = clamp(1.0 - clamp(fa.get("management_tone_score", 0.5)))
+        mgmt_neg  = _bearish_symmetric_score(fa, "management_tone_score")
         score = clamp(
             0.20 * neg_sent + 0.15 * neg_news + 0.15 * event_risk
             + 0.15 * neg_events + 0.15 * gov_flag + 0.10 * uncertainty + 0.10 * mgmt_neg
@@ -151,3 +150,8 @@ class ShortScorer:
             contribution=score * self.weights.valuation_trap,
             missing_features=[k for k in ["valuation_sanity"] if k in fa.missing],
         )
+
+
+def _bearish_symmetric_score(fa: FeatureAccessor, key: str) -> float:
+    raw = max(-1.0, min(1.0, fa.get(key, 0.0)))
+    return clamp((1.0 - raw) / 2.0)

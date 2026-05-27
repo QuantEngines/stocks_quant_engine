@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 from stock_screener_engine.config.settings import AppSettings
+from stock_screener_engine.core.entities import FeatureVector, ScoreCard, SignalResult
 from stock_screener_engine.core.engine import ResearchEngine
 from stock_screener_engine.data_sources.base.interfaces import (
     FinancialsProvider,
@@ -39,7 +41,7 @@ class DailyBatchPipeline:
         self.file_store = LocalFileStorage(settings.storage.root_dir)
         self.sqlite = SQLiteStore(settings.storage.sqlite_path)
 
-    def run(self, symbols: list[str] | None = None) -> dict[str, list]:
+    def run(self, symbols: list[str] | None = None) -> dict[str, object]:
         logger.info("Running daily batch pipeline")
         output = self.engine.run(symbols=symbols, regime_score=None)
         quality_report = build_pipeline_quality_report(output, "daily_batch")
@@ -47,14 +49,19 @@ class DailyBatchPipeline:
         if not quality_report["passed"]:
             raise RuntimeError("Daily batch blocked by data quality issues")
 
-        self.file_store.save_features(output["features"], filename="daily_features.csv")
-        self.file_store.save_signals(output["long_signals"], filename="daily_long_signals.json")
-        self.file_store.save_signals(output["swing_signals"], filename="daily_swing_signals.json")
+        features = cast(list[FeatureVector], output["features"])
+        scores = cast(list[ScoreCard], output["scores"])
+        long_signals = cast(list[SignalResult], output["long_signals"])
+        swing_signals = cast(list[SignalResult], output["swing_signals"])
 
-        self.sqlite.upsert_features(output["features"])
-        self.sqlite.upsert_scores(output["scores"])
-        self.sqlite.insert_signals(output["long_signals"])
-        self.sqlite.insert_signals(output["swing_signals"])
+        self.file_store.save_features(features, filename="daily_features.csv")
+        self.file_store.save_signals(long_signals, filename="daily_long_signals.json")
+        self.file_store.save_signals(swing_signals, filename="daily_swing_signals.json")
+
+        self.sqlite.upsert_features(features)
+        self.sqlite.upsert_scores(scores)
+        self.sqlite.insert_signals(long_signals)
+        self.sqlite.insert_signals(swing_signals)
 
         return output
 

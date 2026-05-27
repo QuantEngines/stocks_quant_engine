@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 from stock_screener_engine.config.settings import AppSettings
 from stock_screener_engine.core.engine import ResearchEngine
+from stock_screener_engine.core.entities import SignalResult
 from stock_screener_engine.data_sources.base.interfaces import (
     FinancialsProvider,
     MarketDataProvider,
@@ -36,12 +38,13 @@ class IntradayUpdatePipeline:
         )
         self.file_store = LocalFileStorage(settings.storage.root_dir)
 
-    def run(self, symbols: list[str] | None = None) -> dict[str, list]:
+    def run(self, symbols: list[str] | None = None) -> dict[str, object]:
         logger.info("Running intraday swing update pipeline")
         output = self.engine.run(symbols=symbols, regime_score=None)
         quality_report = build_pipeline_quality_report(output, "intraday_update")
         self.file_store.save_json(quality_report, filename="intraday_quality_report.json", subdir="quality")
         if not quality_report["passed"]:
             raise RuntimeError("Intraday update blocked by data quality issues")
-        self.file_store.save_signals(output["swing_signals"], filename="intraday_swing_signals.json")
+        swing_signals = cast(list[SignalResult], output["swing_signals"])
+        self.file_store.save_signals(swing_signals, filename="intraday_swing_signals.json")
         return output
