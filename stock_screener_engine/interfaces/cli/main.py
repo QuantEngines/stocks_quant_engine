@@ -6,7 +6,7 @@ import argparse
 import json
 import os
 from collections.abc import Mapping
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from stock_screener_engine.app import (
@@ -27,6 +27,7 @@ from stock_screener_engine.app import (
     run_shareholding_ingest,
     run_single_stock,
     run_forward_return_labels,
+    run_market_refresh,
     run_technical_backtest,
     run_valuation_ingest,
 )
@@ -95,6 +96,20 @@ def main(argv: list[str] | None = None) -> None:
     quality.add_argument("--symbols", default="", help="Comma-separated symbol override")
     quality.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
     quality.add_argument("--interval", default="1d")
+
+    refresh = subparsers.add_parser("refresh-market", help="Refresh canonical market data with retries and quality gates")
+    refresh.add_argument("--start", default=None, help="Start date YYYY-MM-DD")
+    refresh.add_argument("--end", default=None, help="End date YYYY-MM-DD; defaults to today")
+    refresh.add_argument("--lookback-days", type=int, default=10, help="Compute start date from end date")
+    refresh.add_argument("--symbols", default="", help="Comma-separated symbol override")
+    refresh.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
+    refresh.add_argument("--interval", default="1d")
+    refresh.add_argument("--batch-size", type=int, default=25)
+    refresh.add_argument("--retries", type=int, default=2)
+    refresh.add_argument("--retry-delay-seconds", type=float, default=2.0)
+    refresh.add_argument("--run-scan", action="store_true")
+    refresh.add_argument("--scan-mode", choices=["daily", "swing", "full"], default="swing")
+    _add_source_arg(refresh)
 
     readiness = subparsers.add_parser("backtest-readiness", help="Check if canonical data is backtest-ready")
     readiness.add_argument("--start", default=None, help="Start date YYYY-MM-DD")
@@ -302,6 +317,24 @@ def main(argv: list[str] | None = None) -> None:
             config_path=config_path,
             interval=args.interval,
             universe_file=args.universe_file,
+        )
+        _emit(result)
+        return
+
+    if args.command == "refresh-market":
+        start, end = _resolve_refresh_date_range(args)
+        result = run_market_refresh(
+            start=start,
+            end=end,
+            symbols=_parse_symbols(args.symbols),
+            config_path=config_path,
+            interval=args.interval,
+            universe_file=args.universe_file,
+            batch_size=args.batch_size,
+            retries=args.retries,
+            retry_delay_seconds=args.retry_delay_seconds,
+            run_scan=args.run_scan,
+            scan_mode=args.scan_mode,
         )
         _emit(result)
         return
@@ -521,6 +554,13 @@ def _resolve_date_range(args: argparse.Namespace, parser: argparse.ArgumentParse
     if years is None:
         parser.error("--start or --lookback-years is required")
     return _years_before(end, int(years)), end
+
+
+def _resolve_refresh_date_range(args: argparse.Namespace) -> tuple[date, date]:
+    end = date.fromisoformat(args.end) if getattr(args, "end", None) else date.today()
+    if getattr(args, "start", None):
+        return date.fromisoformat(args.start), end
+    return end - timedelta(days=int(getattr(args, "lookback_days", 10))), end
 
 
 def _years_before(end: date, years: int) -> date:

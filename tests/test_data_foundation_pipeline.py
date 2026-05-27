@@ -68,6 +68,27 @@ def test_data_quality_report_reads_from_store(tmp_path: Path) -> None:
     pipeline.close()
 
 
+def test_data_foundation_can_return_failed_report_without_raising(tmp_path: Path) -> None:
+    settings = load_settings()
+    settings = replace(
+        settings,
+        storage=replace(settings.storage, root_dir=str(tmp_path), sqlite_path=str(tmp_path / "market.db")),
+    )
+    store = MarketDataStore(settings.storage.sqlite_path)
+    pipeline = DataFoundationPipeline(settings=settings, market_adapters=[], store=store)
+
+    report = pipeline.run(
+        ["AAA"],
+        start=date(2026, 1, 1),
+        end=date(2026, 1, 2),
+        raise_on_failure=False,
+    )
+
+    assert report["passed"] is False
+    assert report["quality_flags"]["source_reconciliation"]["issues"][0]["symbol"] == "AAA"
+    pipeline.close()
+
+
 def test_app_foundation_builder_writes_provider_data_to_canonical_venue(tmp_path: Path) -> None:
     settings = load_settings()
     settings = replace(

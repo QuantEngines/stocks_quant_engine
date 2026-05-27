@@ -153,6 +153,48 @@ def test_cli_data_quality_delegates(monkeypatch, capsys) -> None:
     assert '"coverage": 1.0' in out
 
 
+def test_cli_refresh_market_delegates(monkeypatch, capsys) -> None:
+    monkeypatch.delenv("SSE_MARKET_PROVIDER", raising=False)
+    monkeypatch.setattr(
+        cli_main,
+        "run_market_refresh",
+        lambda **kwargs: {
+            "pipeline": "market_refresh",
+            "start": kwargs["start"].isoformat(),
+            "end": kwargs["end"].isoformat(),
+            "symbols": kwargs["symbols"],
+            "batch_size": kwargs["batch_size"],
+            "retries": kwargs["retries"],
+            "run_scan": kwargs["run_scan"],
+            "source": cli_main.os.environ.get("SSE_MARKET_PROVIDER"),
+        },
+    )
+
+    cli_main.main([
+        "refresh-market",
+        "--source",
+        "zerodha",
+        "--start",
+        "2026-05-19",
+        "--end",
+        "2026-05-27",
+        "--symbols",
+        "AAA,BBB",
+        "--batch-size",
+        "10",
+        "--retries",
+        "3",
+        "--run-scan",
+    ])
+    out = capsys.readouterr().out
+
+    assert '"pipeline": "market_refresh"' in out
+    assert '"source": "zerodha"' in out
+    assert '"batch_size": 10' in out
+    assert '"retries": 3' in out
+    assert '"run_scan": true' in out
+
+
 def test_cli_backtest_readiness_delegates(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         cli_main,

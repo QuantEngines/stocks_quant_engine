@@ -151,8 +151,81 @@ def test_ohlcv_date_filters_include_timezone_stamped_end_date(tmp_path) -> None:
         coverage = store.coverage_summary(["AAA"], start=date(2026, 5, 27), end=date(2026, 5, 27))
 
         assert len(bars) == 1
+        assert bars[0].ts == "2026-05-27"
         assert coverage["coverage"] == 1.0
         assert coverage["rows_by_symbol"]["AAA"]["n"] == 1
+    finally:
+        store.close()
+
+
+def test_daily_ohlcv_upsert_replaces_same_local_trade_date(tmp_path) -> None:
+    store = MarketDataStore(str(tmp_path / "market.db"))
+    try:
+        store.upsert_ohlcv(
+            [
+                OHLCVBar("NSE", "AAA", "2026-05-18", 100.0, 101.0, 99.0, 100.0, 1000.0),
+            ]
+        )
+        store.upsert_ohlcv(
+            [
+                OHLCVBar(
+                    "NSE",
+                    "AAA",
+                    "2026-05-18T00:00:00+05:30",
+                    101.0,
+                    103.0,
+                    100.0,
+                    102.0,
+                    1500.0,
+                )
+            ]
+        )
+
+        bars = store.get_ohlcv("AAA", start=date(2026, 5, 18), end=date(2026, 5, 18))
+
+        assert len(bars) == 1
+        assert bars[0].ts == "2026-05-18"
+        assert bars[0].close == 102.0
+        assert bars[0].volume == 1500.0
+    finally:
+        store.close()
+
+
+def test_normalize_daily_ohlcv_collapses_existing_duplicate_trade_dates(tmp_path) -> None:
+    store = MarketDataStore(str(tmp_path / "market.db"))
+    try:
+        store.upsert_ohlcv(
+            [
+                OHLCVBar("NSE", "AAA", "2026-05-18", 100.0, 101.0, 99.0, 100.0, 1000.0),
+                OHLCVBar("NSE", "AAA", "2026-05-19", 101.0, 102.0, 100.0, 101.0, 1000.0),
+            ]
+        )
+        store.conn.execute(
+            """
+            INSERT INTO ohlcv_bars(venue, symbol, ts, interval, open, high, low, close, volume, source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "NSE",
+                "AAA",
+                "2026-05-18T00:00:00+05:30",
+                "1d",
+                102.0,
+                103.0,
+                101.0,
+                102.0,
+                1500.0,
+                "legacy_overlap",
+            ),
+        )
+        store.conn.commit()
+
+        report = store.normalize_daily_ohlcv(symbols=["AAA"])
+        bars = store.get_ohlcv("AAA", start=date(2026, 5, 18), end=date(2026, 5, 19))
+
+        assert report["rows_deleted"] == 1
+        assert [bar.ts for bar in bars] == ["2026-05-18", "2026-05-19"]
+        assert len(bars) == 2
     finally:
         store.close()
 

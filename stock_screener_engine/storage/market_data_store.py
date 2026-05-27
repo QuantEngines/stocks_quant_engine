@@ -304,7 +304,23 @@ class MarketDataStore:
         return [_session_from_row(row) for row in cur.fetchall()]
 
     def upsert_ohlcv(self, bars: Iterable[OHLCVBar], interval: str = "1d", source: str = "") -> int:
-        rows = list(bars)
+        rows = [_normalize_ohlcv_bar(bar, interval) for bar in bars]
+        if interval == "1d" and rows:
+            self.conn.executemany(
+                """
+                DELETE FROM ohlcv_bars
+                WHERE venue = ? AND symbol = ? AND interval = ? AND substr(ts, 1, 10) = ?
+                """,
+                [
+                    (
+                        bar.venue.upper(),
+                        bar.symbol.upper(),
+                        interval,
+                        _daily_trade_date(bar.ts),
+                    )
+                    for bar in rows
+                ],
+            )
         self.conn.executemany(
             """
             INSERT OR REPLACE INTO ohlcv_bars(
@@ -358,6 +374,66 @@ class MarketDataStore:
             actions = self.get_corporate_actions(symbol=symbol, venue=venue)
             return adjust_ohlcv_for_actions(bars, actions)
         return bars
+
+    def normalize_daily_ohlcv(
+        self,
+        symbols: Sequence[str] | None = None,
+        start: date | None = None,
+        end: date | None = None,
+        interval: str = "1d",
+    ) -> dict[str, int]:
+        """Collapse daily bars to one row per venue/symbol/local trade date."""
+        if interval != "1d":
+            return {"groups_seen": 0, "rows_deleted": 0, "rows_updated": 0}
+
+        query = "SELECT rowid AS row_id, * FROM ohlcv_bars WHERE interval = ?"
+        params: list[object] = [interval]
+        requested = [symbol.strip().upper() for symbol in symbols or [] if symbol.strip()]
+        if requested:
+            placeholders = ",".join("?" for _ in requested)
+            query += f" AND symbol IN ({placeholders})"
+            params.extend(requested)
+        if start:
+            query += " AND substr(ts, 1, 10) >= ?"
+            params.append(start.isoformat())
+        if end:
+            query += " AND substr(ts, 1, 10) <= ?"
+            params.append(end.isoformat())
+
+        cur = self.conn.cursor()
+        cur.execute(query, params)
+        groups: dict[tuple[str, str, str, str], list[sqlite3.Row]] = {}
+        for row in cur.fetchall():
+            key = (
+                str(row["venue"]).upper(),
+                str(row["symbol"]).upper(),
+                _daily_trade_date(str(row["ts"])),
+                str(row["interval"]),
+            )
+            groups.setdefault(key, []).append(row)
+
+        delete_ids: list[int] = []
+        updates: list[tuple[str, int]] = []
+        for (_, _, trade_date, _), rows in groups.items():
+            keep = max(rows, key=lambda row: (str(row["ingested_at"]), int(row["row_id"])))
+            for row in rows:
+                row_id = int(row["row_id"])
+                if row_id == int(keep["row_id"]):
+                    continue
+                delete_ids.append(row_id)
+            if str(keep["ts"]) != trade_date:
+                updates.append((trade_date, int(keep["row_id"])))
+
+        if delete_ids:
+            cur.executemany("DELETE FROM ohlcv_bars WHERE rowid = ?", [(row_id,) for row_id in delete_ids])
+        if updates:
+            cur.executemany("UPDATE ohlcv_bars SET ts = ? WHERE rowid = ?", updates)
+        self.conn.commit()
+        return {
+            "groups_seen": len(groups),
+            "rows_deleted": len(delete_ids),
+            "rows_updated": len(updates),
+        }
 
     def upsert_corporate_actions(self, actions: Iterable[CorporateActionRecord]) -> int:
         rows = list(actions)
@@ -736,6 +812,17 @@ def adjust_ohlcv_for_actions(
                 )
             )
     return adjusted
+
+
+def _normalize_ohlcv_bar(bar: OHLCVBar, interval: str) -> OHLCVBar:
+    if interval != "1d":
+        return bar
+    normalized_ts = _daily_trade_date(bar.ts)
+    return replace(bar, ts=normalized_ts) if normalized_ts != bar.ts else bar
+
+
+def _daily_trade_date(ts: str) -> str:
+    return str(ts or "").strip()[:10]
 
 
 def _price_adjustment_factor(action: CorporateActionRecord) -> float:

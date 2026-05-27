@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import csv
 import logging
+import os
+import time
+from contextlib import contextmanager
 from dataclasses import asdict, replace
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import cast
+from collections.abc import Iterator, Sequence
 
 from stock_screener_engine.config.settings import AppSettings, load_settings
 from stock_screener_engine.config.startup_validation import validate_startup_settings
@@ -461,6 +465,283 @@ def run_data_quality(
         )
     finally:
         pipeline.close()
+
+
+def run_market_refresh(
+    start: date,
+    end: date,
+    symbols: list[str] | None = None,
+    config_path: str | None = None,
+    interval: str = "1d",
+    universe_file: str | None = None,
+    batch_size: int = 25,
+    retries: int = 2,
+    retry_delay_seconds: float = 2.0,
+    run_scan: bool = False,
+    scan_mode: str = "swing",
+) -> dict[str, object]:
+    """Refresh canonical market data with retry/backoff and quality gates."""
+    settings = load_settings(config_path=config_path)
+    validate_startup_settings(settings)
+    configure_logging(settings.log_level)
+    resolved_symbols, security_records = _resolve_runtime_universe(
+        settings=settings,
+        symbols=symbols,
+        universe_file=universe_file,
+    )
+    batch_size = max(1, int(batch_size))
+    retries = max(0, int(retries))
+    retry_delay_seconds = max(0.0, float(retry_delay_seconds))
+    record_map = {record.symbol: record for record in security_records or []}
+    attempts: list[dict[str, object]] = []
+    pending_retry: set[str] = set()
+
+    for batch_number, batch_symbols in enumerate(_chunks(resolved_symbols, batch_size), start=1):
+        report = _run_data_foundation_attempt(
+            settings=settings,
+            symbols=batch_symbols,
+            start=start,
+            end=end,
+            interval=interval,
+            security_records=[record_map[symbol] for symbol in batch_symbols if symbol in record_map],
+        )
+        attempts.append(
+            _refresh_attempt_summary(
+                report,
+                phase="initial",
+                attempt=0,
+                batch_number=batch_number,
+                requested_symbols=batch_symbols,
+            )
+        )
+        pending_retry.update(_symbols_needing_retry(report, batch_symbols))
+
+    for attempt_number in range(1, retries + 1):
+        if not pending_retry:
+            break
+        if retry_delay_seconds:
+            time.sleep(retry_delay_seconds)
+        retry_symbols = sorted(pending_retry)
+        pending_retry.clear()
+        for batch_number, batch_symbols in enumerate(_chunks(retry_symbols, batch_size), start=1):
+            report = _run_data_foundation_attempt(
+                settings=settings,
+                symbols=batch_symbols,
+                start=start,
+                end=end,
+                interval=interval,
+                security_records=[record_map[symbol] for symbol in batch_symbols if symbol in record_map],
+            )
+            attempts.append(
+                _refresh_attempt_summary(
+                    report,
+                    phase="retry",
+                    attempt=attempt_number,
+                    batch_number=batch_number,
+                    requested_symbols=batch_symbols,
+                )
+            )
+            pending_retry.update(_symbols_needing_retry(report, batch_symbols))
+
+    normalization = _normalize_refresh_daily_bars(settings, resolved_symbols, interval)
+    quality_report = _run_data_quality_attempt(
+        settings=settings,
+        symbols=resolved_symbols,
+        start=start,
+        end=end,
+        interval=interval,
+    )
+    passed = bool(quality_report.get("passed")) and not pending_retry
+    scan_summary = None
+    if run_scan and passed:
+        scan_summary = _run_refresh_scan_summary(resolved_symbols, scan_mode, config_path)
+
+    report = {
+        "pipeline": "market_refresh",
+        "run_at": datetime.utcnow().isoformat() + "Z",
+        "source": settings.runtime_data.market_provider,
+        "canonical_venue": settings.runtime_data.canonical_venue,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "interval": interval,
+        "symbols_requested": len(resolved_symbols),
+        "batch_size": batch_size,
+        "retries": retries,
+        "retry_delay_seconds": retry_delay_seconds,
+        "passed": passed,
+        "failed_symbols": sorted(pending_retry),
+        "attempts": attempts,
+        "normalization": normalization,
+        "quality": quality_report,
+        "scan": scan_summary,
+    }
+    LocalFileStorage(settings.storage.root_dir).save_json(
+        report,
+        filename="market_refresh_report.json",
+        subdir="quality",
+    )
+    if not passed:
+        raise RuntimeError("Market refresh blocked by failed symbols or quality issues")
+    return report
+
+
+def _run_data_foundation_attempt(
+    settings: AppSettings,
+    symbols: Sequence[str],
+    start: date,
+    end: date,
+    interval: str,
+    security_records: Sequence[object],
+) -> dict[str, object]:
+    pipeline = _build_data_foundation_pipeline(
+        settings,
+        security_master_records=list(security_records),
+    )
+    try:
+        return pipeline.run(
+            symbols=list(symbols),
+            start=start,
+            end=end,
+            interval=interval,
+            raise_on_failure=False,
+        )
+    finally:
+        pipeline.close()
+
+
+def _run_data_quality_attempt(
+    settings: AppSettings,
+    symbols: Sequence[str],
+    start: date,
+    end: date,
+    interval: str,
+) -> dict[str, object]:
+    pipeline = _build_data_foundation_pipeline(settings, market_adapters=[])
+    try:
+        return pipeline.quality_report(
+            symbols=list(symbols),
+            start=start,
+            end=end,
+            interval=interval,
+        )
+    finally:
+        pipeline.close()
+
+
+def _normalize_refresh_daily_bars(
+    settings: AppSettings,
+    symbols: Sequence[str],
+    interval: str,
+) -> dict[str, int]:
+    store = MarketDataStore(settings.storage.sqlite_path)
+    try:
+        return store.normalize_daily_ohlcv(symbols=symbols, interval=interval)
+    finally:
+        store.close()
+
+
+def _symbols_needing_retry(report: dict[str, object], requested_symbols: Sequence[str]) -> set[str]:
+    requested = {symbol.strip().upper() for symbol in requested_symbols if symbol.strip()}
+    retry: set[str] = set()
+
+    for error in report.get("source_errors", []):
+        if not isinstance(error, str):
+            continue
+        parts = error.split(":", maxsplit=2)
+        if len(parts) >= 2:
+            symbol = parts[1].strip().upper()
+            if symbol in requested:
+                retry.add(symbol)
+
+    coverage = _mapping(report.get("coverage"))
+    for symbol in coverage.get("missing_symbols", []):
+        normalized = str(symbol).strip().upper()
+        if normalized in requested:
+            retry.add(normalized)
+
+    quality_flags = _mapping(report.get("quality_flags"))
+    ohlcv = _mapping(quality_flags.get("ohlcv"))
+    for warning in ohlcv.get("warnings", []):
+        if isinstance(warning, str) and warning.startswith("Missing OHLCV bars for:"):
+            missing_text = warning.split(":", maxsplit=1)[1]
+            for symbol in missing_text.split(","):
+                normalized = symbol.strip().upper()
+                if normalized in requested:
+                    retry.add(normalized)
+
+    reconciliation = _mapping(quality_flags.get("source_reconciliation"))
+    for issue in reconciliation.get("issues", []):
+        issue_map = _mapping(issue)
+        if str(issue_map.get("severity", "")).lower() != "error":
+            continue
+        normalized = str(issue_map.get("symbol", "")).strip().upper()
+        if normalized in requested:
+            retry.add(normalized)
+
+    return retry
+
+
+def _mapping(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _refresh_attempt_summary(
+    report: dict[str, object],
+    phase: str,
+    attempt: int,
+    batch_number: int,
+    requested_symbols: Sequence[str],
+) -> dict[str, object]:
+    coverage = _mapping(report.get("coverage"))
+    rows_persisted = _mapping(report.get("rows_persisted"))
+    return {
+        "phase": phase,
+        "attempt": attempt,
+        "batch_number": batch_number,
+        "passed": bool(report.get("passed")),
+        "symbols_requested": report.get("symbols_requested"),
+        "ohlcv_bars": rows_persisted.get("ohlcv_bars", 0),
+        "coverage": coverage.get("coverage"),
+        "missing_symbols": coverage.get("missing_symbols", []),
+        "source_errors": report.get("source_errors", []),
+        "retry_symbols": sorted(_symbols_needing_retry(report, requested_symbols)),
+    }
+
+
+def _run_refresh_scan_summary(symbols: Sequence[str], scan_mode: str, config_path: str | None) -> dict[str, object]:
+    with _temporary_env(
+        {
+            "SSE_MARKET_PROVIDER": "canonical",
+            "SSE_MARKET_UNIVERSE": ",".join(symbols),
+        }
+    ):
+        result = run_screen(config_path=config_path)
+    return {
+        "mode": scan_mode,
+        "daily_top_long": result.get("daily_top_long", []) if scan_mode in {"daily", "full"} else [],
+        "daily_top_swing": result.get("daily_top_swing", []) if scan_mode in {"swing", "full"} else [],
+        "intraday_top_swing": result.get("intraday_top_swing", []) if scan_mode in {"swing", "full"} else [],
+        "broker_enabled": result.get("broker_enabled", {}),
+    }
+
+
+def _chunks(values: Sequence[str], size: int) -> Iterator[list[str]]:
+    for idx in range(0, len(values), size):
+        yield list(values[idx : idx + size])
+
+
+@contextmanager
+def _temporary_env(values: dict[str, str]) -> Iterator[None]:
+    previous = {key: os.environ.get(key) for key in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def run_backtest_readiness(

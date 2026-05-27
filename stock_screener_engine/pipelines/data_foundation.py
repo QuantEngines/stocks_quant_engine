@@ -52,6 +52,7 @@ class DataFoundationPipeline:
         start: date,
         end: date,
         interval: str = "1d",
+        raise_on_failure: bool = True,
     ) -> dict[str, object]:
         symbols = [s.strip().upper() for s in symbols if s.strip()]
         run_at = datetime.utcnow().isoformat() + "Z"
@@ -93,7 +94,7 @@ class DataFoundationPipeline:
             "source_errors": [*market_errors, *action_errors, *shareholding_errors],
         }
         self.file_store.save_json(report, filename="data_foundation_quality_report.json", subdir="quality")
-        if not report["passed"]:
+        if not report["passed"] and raise_on_failure:
             raise RuntimeError("Data foundation blocked by quality or reconciliation issues")
         return report
 
