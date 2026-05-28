@@ -106,6 +106,139 @@ PARTIAL_OR_NEEDS_VALIDATION: frozenset[str] = frozenset(
 )
 
 
+VARIABLE_DEFINITIONS: dict[str, str] = {
+    "point_in_time_as_of_date": "Date when data became usable.",
+    "filing_date": "Official filing submission date.",
+    "result_announcement_timestamp": "Timestamp of result announcement.",
+    "exchange_announcement_timestamp": "Exchange disclosure publication time.",
+    "data_vendor_timestamp": "Vendor data update timestamp.",
+    "source_document_url": "Link to source document.",
+    "source_document_id": "Unique source document identifier.",
+    "source_confidence_score": "Reliability score for sourced data.",
+    "data_revision_version": "Version of revised data point.",
+    "restatement_flag": "Marks restated reported data.",
+    "survivorship_status": "Listed, delisted, merged, or inactive.",
+    "delisting_date": "Date security stopped trading.",
+    "listing_date": "Date security started trading.",
+    "symbol_change_history": "Historical ticker symbol changes.",
+    "isin_change_history": "Historical ISIN changes.",
+    "index_membership_start_date": "Date security entered an index.",
+    "index_membership_end_date": "Date security exited an index.",
+    "free_float_market_cap_history": "Historical free-float market value.",
+    "shares_outstanding_history": "Historical total shares outstanding.",
+    "float_shares_history": "Historical freely tradable shares.",
+    "official_delivery_quantity": "Exchange-reported deliverable share count.",
+    "official_delivery_percentage": "Deliverable volume as trade percentage.",
+    "trade_count": "Number of trades executed.",
+    "futures_open_interest_history": "Historical futures open interest.",
+    "options_chain_history": "Historical option chain snapshots.",
+    "earnings_calendar_date": "Expected or actual earnings date.",
+    "earnings_surprise": "Earnings versus consensus expectation.",
+    "revenue_surprise": "Revenue versus consensus expectation.",
+    "eps_surprise": "EPS versus consensus expectation.",
+    "estimate_revision_1m": "One-month consensus estimate change.",
+    "estimate_revision_3m": "Three-month consensus estimate change.",
+    "estimate_revision_6m": "Six-month consensus estimate change.",
+    "analyst_count_history": "Historical number of covering analysts.",
+    "consensus_dispersion": "Spread across analyst estimates.",
+    "target_price_revision": "Change in consensus target price.",
+    "management_guidance": "Forward guidance from management.",
+    "guidance_revision": "Change in management guidance.",
+    "auditor_name": "Company statutory auditor name.",
+    "auditor_qualification_flag": "Flags qualified audit opinion.",
+    "auditor_resignation_flag": "Flags auditor resignation event.",
+    "related_party_transaction_value": "Value of related-party transactions.",
+    "contingent_liabilities": "Potential liabilities not yet booked.",
+    "pledged_shares_history": "Historical pledged promoter holdings.",
+    "insider_trade_value": "Value of insider trades.",
+    "bulk_deal_value": "Value of exchange bulk deals.",
+    "block_deal_value": "Value of exchange block deals.",
+    "mutual_fund_holding_pct": "Mutual fund ownership percentage.",
+    "insurance_holding_pct": "Insurance company ownership percentage.",
+    "fpi_holding_pct": "Foreign portfolio investor ownership.",
+    "dii_flow_value": "Domestic institutional net flow.",
+    "fii_flow_value": "Foreign institutional net flow.",
+    "sector_fii_flow_value": "Sector-level foreign institutional flow.",
+    "sector_dii_flow_value": "Sector-level domestic institutional flow.",
+    "sector_constituents": "Stocks mapped to each sector.",
+    "sector_policy_event_score": "Score for policy impact by sector.",
+    "usd_inr": "USD/INR exchange rate.",
+    "brent_crude": "Brent crude oil price.",
+    "gold_price": "Gold spot or futures price.",
+    "india_10y_yield": "Indian 10-year bond yield.",
+    "us_10y_yield": "US 10-year treasury yield.",
+    "repo_rate": "RBI policy repo rate.",
+    "cpi_inflation": "Consumer price inflation rate.",
+    "wpi_inflation": "Wholesale price inflation rate.",
+    "iip_growth": "Industrial production growth rate.",
+    "pmi_manufacturing": "Manufacturing PMI reading.",
+    "pmi_services": "Services PMI reading.",
+    "credit_growth": "Bank credit growth rate.",
+    "system_liquidity": "Banking system liquidity condition.",
+    "capacity_utilization": "Industrial capacity utilization rate.",
+    "forex_reserves": "India foreign exchange reserves.",
+    "trade_balance": "Exports minus imports balance.",
+    "money_supply": "Broad money supply measure.",
+    "core_inflation": "Inflation excluding volatile items.",
+    "global_pmi": "Global purchasing managers index.",
+    "dxy": "US dollar index.",
+    "india_vix": "Indian equity volatility index.",
+    "vix_proxy": "Global volatility proxy.",
+    "nifty50_index": "Nifty 50 index level/history.",
+    "nifty_bank_index": "Bank Nifty index level/history.",
+    "sector_index_ohlcv": "Sector index OHLCV history.",
+    "sector_breadth": "Sector participation breadth measure.",
+    "sector_advance_decline": "Advancers versus decliners by sector.",
+    "sector_dispersion": "Return dispersion across sectors.",
+    "nse_index_option_pcr": "Index option put-call ratio.",
+    "nse_index_oi_churn": "Index option open-interest churn.",
+    "macro_event_calendar_basic": "Important macro event calendar.",
+    "rbi_mpc_dates": "RBI policy meeting dates.",
+    "union_budget_dates": "Union Budget event dates.",
+    "gdp_release_dates": "GDP data release dates.",
+    "cpi_release_dates": "CPI data release dates.",
+    "iip_release_dates": "IIP data release dates.",
+    "wpi_release_dates": "WPI data release dates.",
+    "pmi_release_dates": "PMI data release dates.",
+    "gst_collection": "Monthly GST tax collection.",
+    "e_way_bill_count": "E-way bill activity count.",
+    "monsoon_rainfall_deviation": "Rainfall deviation from normal.",
+    "rural_demand_proxy": "Proxy for rural demand strength.",
+    "capex_cycle_proxy": "Proxy for investment cycle strength.",
+    "deposit_growth": "Bank deposit growth rate.",
+    "banking_system_credit_deposit_ratio": "System credit-to-deposit ratio.",
+    "raw_pdf_text": "Extracted text from PDFs.",
+    "annual_report_sections": "Detected annual-report sections.",
+    "concall_transcript_text": "Text of earnings call transcript.",
+    "management_guidance_source_text": "Text supporting guidance extraction.",
+    "risk_factor_source_text": "Text supporting risk extraction.",
+    "litigation_event_flag": "Flags litigation-related event.",
+    "regulatory_event_flag": "Flags regulatory event.",
+    "news_full_text": "Full text of news article.",
+    "news_source_reliability": "Reliability rating of news source.",
+    "event_timestamp": "Timestamp of detected event.",
+    "event_category": "Class of detected event.",
+    "stt_cost": "Securities transaction tax cost.",
+    "exchange_charges": "Exchange transaction charges.",
+    "brokerage_cost": "Brokerage fee amount.",
+    "tax_cost": "Applicable trading tax cost.",
+}
+
+
+MISSING_DATA_CSV_COLUMNS: list[str] = [
+    "variable",
+    "definition",
+    "domain",
+    "priority",
+    "status",
+    "preferred_sources",
+    "required_for",
+    "procurement_action",
+    "notes",
+    "upstream_coverage",
+]
+
+
 BASE_REQUIREMENTS: tuple[DataRequirement, ...] = (
     DataRequirement(
         "point_in_time_as_of_date",
@@ -398,9 +531,11 @@ def missing_data_rows_for_csv(report: Mapping[str, object]) -> list[dict[str, ob
     for row in report.get("rows", []):
         if not isinstance(row, Mapping):
             continue
+        variable = str(row.get("name", ""))
         rows.append(
             {
-                "variable": row.get("name", ""),
+                "variable": variable,
+                "definition": VARIABLE_DEFINITIONS.get(variable, _fallback_definition(variable)),
                 "domain": row.get("domain", ""),
                 "priority": row.get("priority", ""),
                 "status": row.get("status", ""),
@@ -666,6 +801,10 @@ def _normalize_token(value: str) -> str:
     token = re.sub(r"[^a-z0-9]+", "_", token)
     token = token.strip("_")
     return token
+
+
+def _fallback_definition(variable: str) -> str:
+    return variable.replace("_", " ").strip().capitalize()
 
 
 def _resolve_quant_root(quant_root: Path | None) -> Path:

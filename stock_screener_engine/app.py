@@ -67,7 +67,11 @@ from stock_screener_engine.pipelines.factor_bootstrap import FactorBootstrapPipe
 from stock_screener_engine.pipelines.factor_qa import CanonicalFactorQAReporter
 from stock_screener_engine.pipelines.intraday_update import IntradayUpdatePipeline
 from stock_screener_engine.pipelines.live_invalidation_daily import run_live_invalidation_daily_job
-from stock_screener_engine.pipelines.missing_data import build_missing_data_report, missing_data_rows_for_csv
+from stock_screener_engine.pipelines.missing_data import (
+    MISSING_DATA_CSV_COLUMNS,
+    build_missing_data_report,
+    missing_data_rows_for_csv,
+)
 from stock_screener_engine.pipelines.source_priority import build_source_priority_report
 from stock_screener_engine.reporting.signal_report import (
     build_signal_reports,
@@ -1646,7 +1650,12 @@ def run_missing_data_list(
     }
     file_store.save_json(report, filename="missing_data_list_report.json", subdir="quality")
     file_store.save_text(str(report["markdown"]), filename="missing_data_list_report.md", subdir="quality")
-    file_store.save_rows_csv(missing_data_rows_for_csv(report), filename="missing_data_list_report.csv", subdir="quality")
+    file_store.save_rows_csv(
+        missing_data_rows_for_csv(report),
+        filename="missing_data_list_report.csv",
+        subdir="quality",
+        fieldnames=MISSING_DATA_CSV_COLUMNS,
+    )
     return report
 
 

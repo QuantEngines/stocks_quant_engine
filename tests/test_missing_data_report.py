@@ -56,6 +56,7 @@ series:
     csv_rows = missing_data_rows_for_csv(report)
     usd_row = next(row for row in csv_rows if row["variable"] == "usd_inr")
     assert usd_row["status"] == "covered_upstream_not_wired"
+    assert usd_row["definition"] == "USD/INR exchange rate."
     assert "macros_quant_engine" in str(usd_row["upstream_coverage"])
 
 

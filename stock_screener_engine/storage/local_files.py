@@ -87,14 +87,21 @@ class LocalFileStorage:
         output.write_text(payload, encoding="utf-8")
         return output
 
-    def save_rows_csv(self, rows: list[dict], filename: str, subdir: str = "cleaned") -> Path:
+    def save_rows_csv(
+        self,
+        rows: list[dict],
+        filename: str,
+        subdir: str = "cleaned",
+        fieldnames: list[str] | None = None,
+    ) -> Path:
         target_dir = self._resolve_subdir(subdir)
         output = target_dir / filename
         if not rows:
             output.write_text("", encoding="utf-8")
             return output
 
-        columns = sorted({k for row in rows for k in row.keys()})
+        row_keys = {k for row in rows for k in row.keys()}
+        columns = [*fieldnames, *sorted(row_keys - set(fieldnames))] if fieldnames else sorted(row_keys)
         with output.open("w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=columns)
             writer.writeheader()
