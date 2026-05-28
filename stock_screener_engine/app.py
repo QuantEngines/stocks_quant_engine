@@ -929,7 +929,7 @@ def run_screen(
             start=readiness_start,
             lookback_years=readiness_lookback_years,
         )
-        if normalized_readiness in {"enforce", "block"} and not bool(data_readiness.get("passed")):
+        if normalized_readiness in {"enforce", "block"} and not _scan_has_allowed_output(data_readiness):
             return _blocked_scan_payload(
                 settings=settings,
                 symbols=resolved_symbols,
@@ -946,6 +946,13 @@ def run_screen(
     swing_signals = cast(list[SignalResult], daily.get("swing_signals", []))
     short_signals_top = cast(list[SignalResult], daily.get("short_signals_top", []))
     intraday_swing_signals = cast(list[SignalResult], intraday.get("swing_signals", []))
+    signal_permissions = _scan_signal_permissions(data_readiness, normalized_readiness)
+    if not signal_permissions.get("long_term", True):
+        long_signals = []
+        short_signals_top = []
+    if not signal_permissions.get("swing", True):
+        swing_signals = []
+        intraday_swing_signals = []
     report_symbols = [fv.symbol for fv in features]
     company_metadata = _company_metadata_for_reports(settings, report_symbols)
     long_reports = build_signal_reports(
@@ -970,6 +977,7 @@ def run_screen(
         "source": settings.runtime_data.market_provider,
         "scan_mode": normalized_scan_mode,
         "scan_blocked": False,
+        "signal_permissions": signal_permissions,
         "data_readiness": data_readiness,
         "broker_enabled": brokers,
         "daily_top_long": [
@@ -1054,7 +1062,6 @@ def _build_scan_readiness_report(
 ) -> dict[str, object]:
     report_as_of = as_of or date.today()
     report_start = start or (report_as_of - timedelta(days=max(1, lookback_years) * 365))
-    readiness_mode = "swing_scan" if scan_mode == "swing" else "long_term_scan"
     store = MarketDataStore(settings.storage.sqlite_path)
     file_store = LocalFileStorage(settings.storage.root_dir)
     try:
@@ -1072,14 +1079,123 @@ def _build_scan_readiness_report(
     finally:
         store.close()
 
-    report = build_data_readiness_report(
+    return _compose_scan_readiness_report(
         coverage_report=coverage,
-        mode=readiness_mode,
+        scan_mode=scan_mode,
         profiles=settings.coverage_gates.profiles or None,
     )
-    report["check_scope"] = "scan"
-    report["scan_mode"] = scan_mode
+
+
+def _compose_scan_readiness_report(
+    *,
+    coverage_report: Mapping[str, object],
+    scan_mode: str,
+    profiles: Mapping[str, Mapping[str, float]] | None = None,
+) -> dict[str, object]:
+    reports: dict[str, dict[str, object]] = {}
+    console_rows: list[dict[str, object]] = []
+    permissions: dict[str, bool] = {}
+    normalized_scan_mode = scan_mode.strip().lower()
+
+    for signal_type, readiness_mode in _readiness_modes_for_scan(normalized_scan_mode).items():
+        report = build_data_readiness_report(
+            coverage_report=coverage_report,
+            mode=readiness_mode,
+            profiles=profiles,
+        )
+        reports[signal_type] = report
+        permissions[signal_type] = bool(report.get("passed"))
+        for row in report.get("console_rows", []):
+            if not isinstance(row, Mapping):
+                continue
+            console_rows.append({"signal": signal_type, **dict(row)})
+
+    passed_count = sum(1 for allowed in permissions.values() if allowed)
+    total_count = len(permissions)
+    if passed_count == total_count:
+        decision = "pass"
+    elif passed_count == 0:
+        decision = "block"
+    else:
+        decision = "partial"
+
+    report = {
+        "pipeline": "scan_data_readiness",
+        "check_scope": "scan",
+        "scan_mode": normalized_scan_mode,
+        "mode": normalized_scan_mode,
+        "decision": decision,
+        "passed": decision == "pass",
+        "signal_permissions": permissions,
+        "reports": reports,
+        "coverage_as_of": coverage_report.get("as_of"),
+        "coverage_start": coverage_report.get("start"),
+        "gross_coverage": coverage_report.get("gross_coverage", {}),
+        "console_rows": console_rows,
+    }
+    report["markdown"] = _render_scan_readiness_markdown(report)
     return report
+
+
+def _readiness_modes_for_scan(scan_mode: str) -> dict[str, str]:
+    if scan_mode == "swing":
+        return {"swing": "swing_scan"}
+    if scan_mode == "daily":
+        return {"long_term": "long_term_scan"}
+    return {"long_term": "long_term_scan", "swing": "swing_scan"}
+
+
+def _scan_signal_permissions(
+    data_readiness: Mapping[str, object] | None,
+    readiness_check: str,
+) -> dict[str, bool]:
+    if readiness_check not in {"enforce", "block"} or not isinstance(data_readiness, Mapping):
+        return {"long_term": True, "swing": True}
+    permissions = data_readiness.get("signal_permissions")
+    if not isinstance(permissions, Mapping):
+        passed = bool(data_readiness.get("passed", True))
+        return {"long_term": passed, "swing": passed}
+    return {
+        "long_term": bool(permissions.get("long_term", True)),
+        "swing": bool(permissions.get("swing", True)),
+    }
+
+
+def _scan_has_allowed_output(data_readiness: Mapping[str, object]) -> bool:
+    permissions = data_readiness.get("signal_permissions")
+    if isinstance(permissions, Mapping):
+        return any(bool(value) for value in permissions.values())
+    return bool(data_readiness.get("passed", True))
+
+
+def _render_scan_readiness_markdown(report: Mapping[str, object]) -> str:
+    lines = [
+        "# Scan Data Readiness",
+        "",
+        f"- Mode: {report.get('scan_mode')}",
+        f"- Decision: {report.get('decision')}",
+        "",
+        "## Signal Permissions",
+        "",
+        "| Signal | Allowed | Gate Decision |",
+        "| --- | --- | --- |",
+    ]
+    permissions = report.get("signal_permissions") if isinstance(report.get("signal_permissions"), Mapping) else {}
+    reports = report.get("reports") if isinstance(report.get("reports"), Mapping) else {}
+    for signal_type, allowed in permissions.items():
+        signal_report = reports.get(signal_type) if isinstance(reports, Mapping) else {}
+        decision = signal_report.get("decision") if isinstance(signal_report, Mapping) else ""
+        lines.append(f"| {signal_type} | {bool(allowed)} | {decision} |")
+
+    report_items = reports.items() if isinstance(reports, Mapping) else []
+    for signal_type, signal_report in report_items:
+        if not isinstance(signal_report, Mapping):
+            continue
+        markdown = str(signal_report.get("markdown", "")).strip()
+        if not markdown:
+            continue
+        lines.extend(["", f"## {str(signal_type).replace('_', ' ').title()}", "", markdown])
+    return "\n".join(lines) + "\n"
 
 
 def _blocked_scan_payload(
@@ -1094,6 +1210,7 @@ def _blocked_scan_payload(
         "scan_mode": scan_mode,
         "scan_blocked": True,
         "symbols_requested": len(symbols),
+        "signal_permissions": data_readiness.get("signal_permissions", {}),
         "data_readiness": dict(data_readiness),
         "daily_top_long": [],
         "daily_top_swing": [],

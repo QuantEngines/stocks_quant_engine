@@ -748,7 +748,9 @@ shareholding reach configured thresholds.
 the relevant data-readiness gate to JSON output, and prepends readiness warnings
 to table/markdown output when a required domain is below threshold. Use
 `--readiness-check enforce` to block production scans until the gate passes, or
-`--readiness-check off` for low-level diagnostics.
+`--readiness-check off` for low-level diagnostics. Full scans evaluate long-term
+and swing readiness separately: weak factor coverage can block long-term output
+while still allowing swing signals when security-master and OHLCV coverage pass.
 
 `finedge-onboarding-plan` creates an ignored local checklist and command
 sequence for the paid FinEdge rollout. It does not call FinEdge; it summarizes
