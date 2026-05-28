@@ -8,7 +8,7 @@ from typing import Sequence
 
 from stock_screener_engine.core.entities import MarketSnapshot, StockSnapshot
 from stock_screener_engine.data_sources.base.interfaces import MarketDataProvider
-from stock_screener_engine.data_sources.schemas import OHLCVBar, SecurityMasterRecord
+from stock_screener_engine.data_sources.schemas import DeliveryTurnoverRecord, OHLCVBar, SecurityMasterRecord
 from stock_screener_engine.storage.market_data_store import MarketDataStore
 
 
@@ -87,7 +87,12 @@ class SQLiteMarketDataProvider(MarketDataProvider):
                 continue
             last = bars[-1]
             security = security_by_symbol.get(symbol)
-            out.append(_snapshot_from_bar(last, security))
+            delivery = self.store.latest_delivery_turnover(
+                symbol=symbol,
+                as_of=_parse_bar_date(last),
+                venue=self.venue,
+            )
+            out.append(_snapshot_from_bar(last, security, delivery))
         return out
 
     def get_market_snapshots(self, symbols: Sequence[str]) -> list[MarketSnapshot]:
@@ -181,14 +186,18 @@ def _bar_to_dict(bar: OHLCVBar) -> dict[str, object]:
     }
 
 
-def _snapshot_from_bar(bar: OHLCVBar, security: SecurityMasterRecord | None) -> StockSnapshot:
+def _snapshot_from_bar(
+    bar: OHLCVBar,
+    security: SecurityMasterRecord | None,
+    delivery: DeliveryTurnoverRecord | None = None,
+) -> StockSnapshot:
     return StockSnapshot(
         symbol=bar.symbol,
         as_of=_parse_bar_date(bar),
         sector=security.sector if security is not None else "Unknown",
         close=bar.close,
         volume=bar.volume,
-        delivery_ratio=0.0,
+        delivery_ratio=delivery.delivery_pct / 100.0 if delivery is not None else 0.0,
         pe_ratio=0.0,
         roe=0.0,
         debt_to_equity=0.0,

@@ -24,6 +24,17 @@ class OHLCVBar:
 
 
 @dataclass(frozen=True)
+class DeliveryTurnoverRecord:
+    venue: str
+    symbol: str
+    trade_date: date
+    traded_quantity: float
+    delivery_quantity: float
+    delivery_pct: float
+    source_id: str = ""
+
+
+@dataclass(frozen=True)
 class SecurityMasterRecord:
     symbol: str
     isin: str = ""

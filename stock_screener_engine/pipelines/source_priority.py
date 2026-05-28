@@ -44,6 +44,13 @@ DEFAULT_SOURCE_PRIORITY: tuple[SourcePriorityRule, ...] = (
         notes="Live broker data is useful for freshness and alerts; execution remains optional.",
     ),
     SourcePriorityRule(
+        domain="delivery_turnover",
+        primary=["nse_bse"],
+        alternates=[],
+        required_for=["swing_scan", "participation_filters", "volume_confirmation"],
+        notes="Official delivery/turnover data should feed Indian-market participation and false-breakout filters.",
+    ),
+    SourcePriorityRule(
         domain="financials",
         primary=["finedge"],
         alternates=["nse_bse"],

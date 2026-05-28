@@ -540,7 +540,10 @@ stock-engine data-quality --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/
 stock-engine data-entitlements --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --format markdown
 stock-engine data-source-coverage --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --format markdown
 stock-engine data-source-priority --format markdown
+stock-engine missing-data-list --format markdown
 stock-engine data-readiness --mode long-term-scan --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --format markdown
+stock-engine exchange-foundation-status --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --format markdown
+stock-engine exchange-delivery-ingest --file "$SSE_STORAGE_ROOT/exchange/nse_delivery_2026-05-28.csv" --trade-date 2026-05-28 --venue NSE --format table
 stock-engine scan --source canonical --mode full --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --readiness-check warn --format table
 stock-engine scan --source canonical --mode full --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --readiness-check enforce --format json
 stock-engine refresh-market --source zerodha --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --lookback-days 10 --batch-size 25 --retries 2 --run-scan
@@ -738,11 +741,26 @@ valuation, ownership, banking factors, and documents, and yfinance/FMP/IndianAPI
 remain fallback or paused sources until proven. The report is written under
 `$SSE_STORAGE_ROOT/quality`, outside git.
 
+`missing-data-list` publishes the next procurement list after checking sibling
+Quant Engines for reusable macro, rates, options, and event-calendar variables.
+Those variables are marked as `covered_upstream_not_wired`, meaning the stock
+engine should not procure them again; they should move through the future shared
+data layer. The command writes `missing_data_list_report.json` and
+`missing_data_list_report.md` under `$SSE_STORAGE_ROOT/quality`, outside git.
+
 `data-readiness` applies hard coverage gates on top of `data-source-coverage`.
 Modes include `swing-scan`, `long-term-scan`, `deep-research`, and `backtest`.
 For example, a swing scan can pass with strong security master and OHLCV
 coverage, while long-term research blocks until financials, valuations, and
 shareholding reach configured thresholds.
+
+`exchange-foundation-status` is the NSE/BSE-specific coverage report. It tracks
+security master, bhavcopy-style OHLCV coverage, delivery/turnover, corporate
+actions, announcement/PDF ingestion, historical constituents, and symbol-change
+gaps. `exchange-delivery-ingest` loads external official delivery/turnover CSVs
+into the canonical `delivery_turnover` table. The canonical SQLite market
+provider uses the latest available delivery percentage as the snapshot
+`delivery_ratio`, improving Indian-market swing participation features.
 
 `scan` is readiness-aware. By default it uses `--readiness-check warn`, attaches
 the relevant data-readiness gate to JSON output, and prepends readiness warnings

@@ -22,6 +22,8 @@ from stock_screener_engine.app import (
     run_deepdive_report,
     run_document_ingest,
     run_engine_backtest,
+    run_exchange_delivery_ingest,
+    run_exchange_foundation_status,
     run_factor_ingest,
     run_factor_qa,
     run_factor_template,
@@ -32,6 +34,7 @@ from stock_screener_engine.app import (
     run_fmp_probe,
     run_financials_ingest,
     run_indianapi_probe,
+    run_missing_data_list,
     run_peer_report,
     run_screen,
     run_sector_rankings,
@@ -135,6 +138,14 @@ def main(argv: list[str] | None = None) -> None:
     )
     source_priority.add_argument("--format", choices=["json", "table", "markdown"], default="markdown")
 
+    missing_data = subparsers.add_parser(
+        "missing-data-list",
+        help="Publish the refined missing-data list after reusable sibling-engine coverage",
+    )
+    missing_data.add_argument("--quant-root", default=None, help="Parent Quant Engines folder; defaults to current repo parent")
+    missing_data.add_argument("--no-cross-engine", action="store_true", help="Do not inspect sibling engines for reusable data")
+    missing_data.add_argument("--format", choices=["json", "table", "markdown"], default="markdown")
+
     data_readiness = subparsers.add_parser(
         "data-readiness",
         help="Evaluate hard data-coverage gates for scans, research, and backtests",
@@ -148,6 +159,29 @@ def main(argv: list[str] | None = None) -> None:
     data_readiness.add_argument("--venue", default=None)
     data_readiness.add_argument("--interval", default="1d")
     data_readiness.add_argument("--format", choices=["json", "table", "markdown"], default="markdown")
+
+    exchange_status = subparsers.add_parser(
+        "exchange-foundation-status",
+        help="Report NSE/BSE exchange-foundation coverage and remaining blockers",
+    )
+    exchange_status.add_argument("--start", default=None, help="Start date YYYY-MM-DD")
+    exchange_status.add_argument("--end", default=None, help="End/as-of date YYYY-MM-DD; defaults to today")
+    exchange_status.add_argument("--lookback-years", type=int, default=5, help="Compute start date from end date")
+    exchange_status.add_argument("--symbols", default="", help="Comma-separated symbol override")
+    exchange_status.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
+    exchange_status.add_argument("--venue", default=None)
+    exchange_status.add_argument("--interval", default="1d")
+    exchange_status.add_argument("--format", choices=["json", "table", "markdown"], default="markdown")
+
+    exchange_delivery = subparsers.add_parser(
+        "exchange-delivery-ingest",
+        help="Ingest an official NSE/BSE delivery-turnover CSV into canonical storage",
+    )
+    exchange_delivery.add_argument("--file", required=True, help="External delivery/turnover CSV path")
+    exchange_delivery.add_argument("--trade-date", default=None, help="Default trade date YYYY-MM-DD if file lacks a date column")
+    exchange_delivery.add_argument("--venue", default=None)
+    exchange_delivery.add_argument("--source-id", default="")
+    exchange_delivery.add_argument("--format", choices=["json", "table"], default="json")
 
     data_entitlements = subparsers.add_parser(
         "data-entitlements",
@@ -604,6 +638,15 @@ def main(argv: list[str] | None = None) -> None:
         _emit(_data_source_priority_payload(result, args.format), fmt=args.format)
         return
 
+    if args.command == "missing-data-list":
+        result = run_missing_data_list(
+            config_path=config_path,
+            quant_root=args.quant_root,
+            include_cross_engine=not args.no_cross_engine,
+        )
+        _emit(_missing_data_payload(result, args.format), fmt=args.format)
+        return
+
     if args.command == "data-readiness":
         start, end = _resolve_date_range(args, parser)
         result = run_data_readiness(
@@ -617,6 +660,31 @@ def main(argv: list[str] | None = None) -> None:
             venue=args.venue,
         )
         _emit(_data_readiness_payload(result, args.format), fmt=args.format)
+        return
+
+    if args.command == "exchange-foundation-status":
+        start, end = _resolve_date_range(args, parser)
+        result = run_exchange_foundation_status(
+            as_of=end,
+            start=start,
+            symbols=_parse_symbols(args.symbols),
+            config_path=config_path,
+            interval=args.interval,
+            universe_file=args.universe_file,
+            venue=args.venue,
+        )
+        _emit(_exchange_foundation_payload(result, args.format), fmt=args.format)
+        return
+
+    if args.command == "exchange-delivery-ingest":
+        result = run_exchange_delivery_ingest(
+            file_path=args.file,
+            trade_date=date.fromisoformat(args.trade_date) if args.trade_date else None,
+            config_path=config_path,
+            venue=args.venue,
+            source_id=args.source_id,
+        )
+        _emit(_exchange_delivery_payload(result, args.format), fmt=args.format)
         return
 
     if args.command == "data-entitlements":
@@ -1082,6 +1150,31 @@ def _data_source_priority_payload(result: dict[str, object], fmt: str) -> object
     return result
 
 
+def _missing_data_payload(result: dict[str, object], fmt: str) -> object:
+    if fmt == "markdown":
+        markdown = result.get("markdown")
+        return markdown if isinstance(markdown, str) else ""
+    if fmt == "table":
+        rows = []
+        for row in result.get("rows", []):
+            if not isinstance(row, Mapping):
+                continue
+            if row.get("status") == "covered_upstream_not_wired":
+                continue
+            rows.append(
+                {
+                    "variable": row.get("name"),
+                    "domain": row.get("domain"),
+                    "priority": row.get("priority"),
+                    "status": row.get("status"),
+                    "preferred_sources": row.get("preferred_sources"),
+                    "action": row.get("procurement_action"),
+                }
+            )
+        return rows
+    return result
+
+
 def _data_readiness_payload(result: dict[str, object], fmt: str) -> object:
     if fmt == "markdown":
         markdown = result.get("markdown")
@@ -1089,6 +1182,31 @@ def _data_readiness_payload(result: dict[str, object], fmt: str) -> object:
     if fmt == "table":
         rows = result.get("console_rows")
         return rows if isinstance(rows, list) else []
+    return result
+
+
+def _exchange_foundation_payload(result: dict[str, object], fmt: str) -> object:
+    if fmt == "markdown":
+        markdown = result.get("markdown")
+        return markdown if isinstance(markdown, str) else ""
+    if fmt == "table":
+        rows = result.get("domains")
+        return rows if isinstance(rows, list) else []
+    return result
+
+
+def _exchange_delivery_payload(result: dict[str, object], fmt: str) -> object:
+    if fmt == "table":
+        return [
+            {
+                "venue": result.get("venue"),
+                "file": result.get("file"),
+                "input_rows": result.get("input_rows"),
+                "persisted": result.get("persisted"),
+                "symbols": result.get("symbols"),
+                "passed": result.get("passed"),
+            }
+        ]
     return result
 
 

@@ -11,6 +11,7 @@ from typing import Iterable, Sequence
 from stock_screener_engine.data_sources.schemas import (
     BankingFactorRecord,
     CorporateActionRecord,
+    DeliveryTurnoverRecord,
     EquityValuationRecord,
     FinancialStatementRecord,
     MarketSessionRecord,
@@ -95,6 +96,21 @@ class MarketDataStore:
                 currency TEXT NOT NULL,
                 source_id TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY(venue, symbol, action_type, ex_date, source_id)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS delivery_turnover (
+                venue TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                traded_quantity REAL NOT NULL,
+                delivery_quantity REAL NOT NULL,
+                delivery_pct REAL NOT NULL,
+                source_id TEXT NOT NULL DEFAULT '',
+                ingested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(venue, symbol, trade_date, source_id)
             )
             """
         )
@@ -504,6 +520,100 @@ class MarketDataStore:
         cur = self.conn.cursor()
         cur.execute(query, params)
         return [_action_from_row(row) for row in cur.fetchall()]
+
+    def upsert_delivery_turnover(self, records: Iterable[DeliveryTurnoverRecord]) -> int:
+        rows = list(records)
+        self.conn.executemany(
+            """
+            INSERT OR REPLACE INTO delivery_turnover(
+                venue, symbol, trade_date, traded_quantity, delivery_quantity, delivery_pct, source_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    record.venue.upper(),
+                    record.symbol.upper(),
+                    record.trade_date.isoformat(),
+                    record.traded_quantity,
+                    record.delivery_quantity,
+                    record.delivery_pct,
+                    record.source_id,
+                )
+                for record in rows
+            ],
+        )
+        self.conn.commit()
+        return len(rows)
+
+    def get_delivery_turnover(
+        self,
+        symbol: str,
+        start: date | None = None,
+        end: date | None = None,
+        venue: str | None = None,
+    ) -> list[DeliveryTurnoverRecord]:
+        query = "SELECT * FROM delivery_turnover WHERE symbol = ?"
+        params: list[object] = [symbol.upper()]
+        if venue:
+            query += " AND venue = ?"
+            params.append(venue.upper())
+        if start:
+            query += " AND trade_date >= ?"
+            params.append(start.isoformat())
+        if end:
+            query += " AND trade_date <= ?"
+            params.append(end.isoformat())
+        query += " ORDER BY trade_date"
+        cur = self.conn.cursor()
+        cur.execute(query, params)
+        return [_delivery_turnover_from_row(row) for row in cur.fetchall()]
+
+    def latest_delivery_turnover(
+        self,
+        symbol: str,
+        as_of: date,
+        venue: str | None = None,
+    ) -> DeliveryTurnoverRecord | None:
+        query = """
+            SELECT * FROM delivery_turnover
+            WHERE symbol = ? AND trade_date <= ?
+        """
+        params: list[object] = [symbol.upper(), as_of.isoformat()]
+        if venue:
+            query += " AND venue = ?"
+            params.append(venue.upper())
+        query += " ORDER BY trade_date DESC LIMIT 1"
+        cur = self.conn.cursor()
+        cur.execute(query, params)
+        row = cur.fetchone()
+        return _delivery_turnover_from_row(row) if row is not None else None
+
+    def delivery_turnover_coverage(
+        self,
+        symbols: Sequence[str],
+        as_of: date,
+        venue: str | None = None,
+        max_age_days: int = 10,
+    ) -> dict[str, object]:
+        requested = {s.strip().upper() for s in symbols if s.strip()}
+        available: dict[str, str] = {}
+        stale: list[str] = []
+        for symbol in requested:
+            latest = self.latest_delivery_turnover(symbol=symbol, as_of=as_of, venue=venue)
+            if latest is None:
+                continue
+            available[symbol] = latest.trade_date.isoformat()
+            if (as_of - latest.trade_date).days > max_age_days:
+                stale.append(symbol)
+        missing = sorted(requested - set(available))
+        return {
+            "symbols_requested": len(requested),
+            "symbols_with_delivery": len(available),
+            "missing_symbols": missing,
+            "stale_symbols": sorted(stale),
+            "coverage": round(len(available) / len(requested), 4) if requested else 0.0,
+            "latest_delivery_by_symbol": available,
+        }
 
     def upsert_financial_statements(self, records: Iterable[FinancialStatementRecord]) -> int:
         rows = list(records)
@@ -1064,6 +1174,18 @@ def _action_from_row(row: sqlite3.Row) -> CorporateActionRecord:
         ratio=row["ratio"],
         cash_amount=row["cash_amount"],
         currency=row["currency"],
+        source_id=row["source_id"],
+    )
+
+
+def _delivery_turnover_from_row(row: sqlite3.Row) -> DeliveryTurnoverRecord:
+    return DeliveryTurnoverRecord(
+        venue=row["venue"],
+        symbol=row["symbol"],
+        trade_date=date.fromisoformat(row["trade_date"]),
+        traded_quantity=float(row["traded_quantity"]),
+        delivery_quantity=float(row["delivery_quantity"]),
+        delivery_pct=float(row["delivery_pct"]),
         source_id=row["source_id"],
     )
 

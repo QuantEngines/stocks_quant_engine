@@ -115,6 +115,7 @@ class DataSourceCoverageReporter:
         financial_services = _financial_symbols(symbols, metadata)
         banking_applicable = self.store.banking_factor_coverage(financial_services, as_of=as_of, venue=self.venue)
         corporate_actions = self._corporate_action_coverage(symbols)
+        delivery = self.store.delivery_turnover_coverage(symbols, as_of=as_of, venue=self.venue)
 
         rows = [
             _domain_row(
@@ -161,6 +162,21 @@ class DataSourceCoverageReporter:
                 applicable_symbols=symbols,
                 gaps=corporate_actions["symbols_without_actions"],
                 notes="Event-style coverage can be naturally sparse, but long-horizon research still needs a reliable adjustment feed.",
+            ),
+            _domain_row(
+                domain="delivery_turnover",
+                label="Delivery and turnover",
+                primary_source_id="nse_bse",
+                source="NSE/BSE delivery-turnover files",
+                coverage=delivery["coverage"],
+                covered=delivery["symbols_with_delivery"],
+                total=delivery["symbols_requested"],
+                status=_status(delivery["coverage"], strong=0.95, usable=0.70),
+                latest=_latest_from_values(delivery.get("latest_delivery_by_symbol")),
+                covered_symbols=sorted((delivery.get("latest_delivery_by_symbol") or {}).keys()) if isinstance(delivery.get("latest_delivery_by_symbol"), Mapping) else [],
+                applicable_symbols=symbols,
+                gaps=delivery["missing_symbols"],
+                notes="High-value Indian-market participation feature for swing signals; now supported through canonical delivery_turnover ingestion.",
             ),
             _domain_row(
                 domain="financials",
@@ -337,7 +353,13 @@ class DataSourceCoverageReporter:
                 "source": "NSE/BSE",
                 "role": "Official exchange/reference source",
                 "current_use": "Security master, exchange adapters, filings/corporate-action direction, future delivery/announcements.",
-                "gross_coverage": _source_coverage([domain.get("security_master", {}), domain.get("corporate_actions", {})]),
+                "gross_coverage": _source_coverage(
+                    [
+                        domain.get("security_master", {}),
+                        domain.get("corporate_actions", {}),
+                        domain.get("delivery_turnover", {}),
+                    ]
+                ),
                 "status": "primary_partial",
                 "evidence": "Security metadata is present; direct filings can still be throttled/403 and corporate-action coverage is not yet production-grade.",
                 "needed": "Robust bhavcopy, delivery, corporate-action, announcement, historical-constituent, and symbol-change ingestion.",

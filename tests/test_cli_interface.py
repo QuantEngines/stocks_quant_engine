@@ -237,6 +237,64 @@ def test_cli_data_readiness_emits_markdown(monkeypatch, capsys) -> None:
     assert out.startswith("# Data Readiness Gate")
 
 
+def test_cli_exchange_foundation_status_emits_markdown(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_exchange_foundation_status",
+        lambda **kwargs: {
+            "pipeline": "exchange_foundation_status",
+            "as_of": kwargs["as_of"].isoformat(),
+            "domains": [{"domain": "delivery_turnover", "coverage": 0.5}],
+            "markdown": "# NSE/BSE Exchange Foundation Status\n",
+        },
+    )
+
+    cli_main.main([
+        "exchange-foundation-status",
+        "--end",
+        "2026-05-28",
+        "--universe-file",
+        "/tmp/nifty50.csv",
+        "--format",
+        "markdown",
+    ])
+    out = capsys.readouterr().out
+
+    assert out.startswith("# NSE/BSE Exchange Foundation Status")
+
+
+def test_cli_exchange_delivery_ingest_emits_table(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_exchange_delivery_ingest",
+        lambda **kwargs: {
+            "pipeline": "exchange_delivery_ingest",
+            "venue": kwargs["venue"],
+            "file": kwargs["file_path"],
+            "input_rows": 2,
+            "persisted": 2,
+            "symbols": 2,
+            "passed": True,
+        },
+    )
+
+    cli_main.main([
+        "exchange-delivery-ingest",
+        "--file",
+        "/tmp/delivery.csv",
+        "--venue",
+        "NSE",
+        "--trade-date",
+        "2026-05-28",
+        "--format",
+        "table",
+    ])
+    out = capsys.readouterr().out
+
+    assert '"persisted": 2' in out
+    assert '"/tmp/delivery.csv"' in out
+
+
 def test_cli_data_source_priority_emits_table(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         cli_main,
@@ -253,6 +311,23 @@ def test_cli_data_source_priority_emits_table(monkeypatch, capsys) -> None:
 
     assert '"domain": "financials"' in out
     assert '"status": "sandbox_ready"' in out
+
+
+def test_cli_missing_data_list_emits_markdown(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_missing_data_list",
+        lambda **kwargs: {
+            "pipeline": "missing_data_list",
+            "rows": [{"name": "filing_date", "status": "still_required"}],
+            "markdown": "# Stock Engine Missing Data List\n",
+        },
+    )
+
+    cli_main.main(["missing-data-list", "--format", "markdown"])
+    out = capsys.readouterr().out
+
+    assert out.startswith("# Stock Engine Missing Data List")
 
 
 def test_cli_data_entitlements_emits_table(monkeypatch, capsys) -> None:

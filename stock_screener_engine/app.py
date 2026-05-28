@@ -59,10 +59,15 @@ from stock_screener_engine.pipelines.data_source_coverage import (
 )
 from stock_screener_engine.pipelines.data_foundation import DataFoundationPipeline
 from stock_screener_engine.pipelines.document_pipeline import DocumentIntelligencePipeline
+from stock_screener_engine.pipelines.exchange_foundation import (
+    build_exchange_foundation_status,
+    ingest_delivery_turnover_csv,
+)
 from stock_screener_engine.pipelines.factor_bootstrap import FactorBootstrapPipeline
 from stock_screener_engine.pipelines.factor_qa import CanonicalFactorQAReporter
 from stock_screener_engine.pipelines.intraday_update import IntradayUpdatePipeline
 from stock_screener_engine.pipelines.live_invalidation_daily import run_live_invalidation_daily_job
+from stock_screener_engine.pipelines.missing_data import build_missing_data_report, missing_data_rows_for_csv
 from stock_screener_engine.pipelines.source_priority import build_source_priority_report
 from stock_screener_engine.reporting.signal_report import (
     build_signal_reports,
@@ -1532,6 +1537,75 @@ def run_data_entitlements(
     return report
 
 
+def run_exchange_foundation_status(
+    as_of: date,
+    start: date,
+    symbols: list[str] | None = None,
+    config_path: str | None = None,
+    interval: str = "1d",
+    universe_file: str | None = None,
+    venue: str | None = None,
+) -> dict[str, object]:
+    """Report NSE/BSE exchange-foundation readiness from canonical storage."""
+    settings = load_settings(config_path=config_path)
+    validate_startup_settings(settings)
+    configure_logging(settings.log_level)
+    resolved_symbols, _ = _resolve_runtime_universe(
+        settings=settings,
+        symbols=symbols,
+        universe_file=universe_file,
+    )
+    canonical_venue = (venue or settings.runtime_data.canonical_venue).strip().upper()
+    store = MarketDataStore(settings.storage.sqlite_path)
+    file_store = LocalFileStorage(settings.storage.root_dir)
+    try:
+        report = build_exchange_foundation_status(
+            store=store,
+            symbols=resolved_symbols,
+            as_of=as_of,
+            start=start,
+            venue=canonical_venue,
+            interval=interval,
+        )
+        quality_dir = file_store.root / "quality"
+        report["artifacts"] = {
+            "json": str(quality_dir / "exchange_foundation_status.json"),
+            "markdown": str(quality_dir / "exchange_foundation_status.md"),
+        }
+        file_store.save_json(report, filename="exchange_foundation_status.json", subdir="quality")
+        file_store.save_text(str(report["markdown"]), filename="exchange_foundation_status.md", subdir="quality")
+        return report
+    finally:
+        store.close()
+
+
+def run_exchange_delivery_ingest(
+    file_path: str,
+    trade_date: date | None = None,
+    config_path: str | None = None,
+    venue: str | None = None,
+    source_id: str = "",
+) -> dict[str, object]:
+    """Ingest an official NSE/BSE delivery-turnover CSV into canonical storage."""
+    settings = load_settings(config_path=config_path)
+    validate_startup_settings(settings)
+    configure_logging(settings.log_level)
+    canonical_venue = (venue or settings.runtime_data.canonical_venue).strip().upper()
+    store = MarketDataStore(settings.storage.sqlite_path)
+    file_store = LocalFileStorage(settings.storage.root_dir)
+    try:
+        return ingest_delivery_turnover_csv(
+            store=store,
+            file_store=file_store,
+            file_path=file_path,
+            venue=canonical_venue,
+            default_trade_date=trade_date,
+            source_id=source_id,
+        )
+    finally:
+        store.close()
+
+
 def run_data_source_priority(config_path: str | None = None) -> dict[str, object]:
     """Report canonical source priority by data domain."""
     settings = load_settings(config_path=config_path)
@@ -1546,6 +1620,33 @@ def run_data_source_priority(config_path: str | None = None) -> dict[str, object
     }
     file_store.save_json(report, filename="data_source_priority_report.json", subdir="quality")
     file_store.save_text(str(report["markdown"]), filename="data_source_priority_report.md", subdir="quality")
+    return report
+
+
+def run_missing_data_list(
+    config_path: str | None = None,
+    quant_root: str | None = None,
+    include_cross_engine: bool = True,
+) -> dict[str, object]:
+    """Publish the next missing-data list after sibling-engine reuse checks."""
+    settings = load_settings(config_path=config_path)
+    validate_startup_settings(settings)
+    configure_logging(settings.log_level)
+    report = build_missing_data_report(
+        quant_root=Path(quant_root) if quant_root else None,
+        entitlements=settings.data_entitlements.sources,
+        include_cross_engine=include_cross_engine,
+    )
+    file_store = LocalFileStorage(settings.storage.root_dir)
+    quality_dir = file_store.root / "quality"
+    report["artifacts"] = {
+        "json": str(quality_dir / "missing_data_list_report.json"),
+        "markdown": str(quality_dir / "missing_data_list_report.md"),
+        "csv": str(quality_dir / "missing_data_list_report.csv"),
+    }
+    file_store.save_json(report, filename="missing_data_list_report.json", subdir="quality")
+    file_store.save_text(str(report["markdown"]), filename="missing_data_list_report.md", subdir="quality")
+    file_store.save_rows_csv(missing_data_rows_for_csv(report), filename="missing_data_list_report.csv", subdir="quality")
     return report
 
 
