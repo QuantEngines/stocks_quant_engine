@@ -35,9 +35,11 @@ def test_professional_signal_report_has_required_sections() -> None:
         "summary",
         "technical",
         "fundamentals",
+        "banking",
         "valuation",
         "event_nlp",
         "risk",
+        "conviction",
         "peer_context",
         "explanation",
     ]:

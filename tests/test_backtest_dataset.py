@@ -11,7 +11,12 @@ from stock_screener_engine.backtest.dataset import (
     ForwardReturnLabelBuilder,
 )
 from stock_screener_engine.config.settings import load_settings
-from stock_screener_engine.data_sources.schemas import OHLCVBar
+from stock_screener_engine.data_sources.schemas import (
+    EquityValuationRecord,
+    FinancialStatementRecord,
+    OHLCVBar,
+    ShareholdingRecord,
+)
 from stock_screener_engine.pipelines.backtest_dataset import BacktestDatasetPipeline
 from stock_screener_engine.storage.market_data_store import MarketDataStore
 
@@ -109,6 +114,36 @@ def test_backtest_dataset_pipeline_persists_labels_and_technical_evaluation(tmp_
         store.close()
 
 
+def test_backtest_dataset_pipeline_reports_engine_factor_coverage(tmp_path: Path) -> None:
+    settings = load_settings()
+    settings = replace(
+        settings,
+        storage=replace(settings.storage, root_dir=str(tmp_path), sqlite_path=str(tmp_path / "market.db")),
+    )
+    store = MarketDataStore(settings.storage.sqlite_path)
+    start = date(2026, 1, 1)
+    try:
+        for idx, symbol in enumerate(["AAA", "BBB", "CCC", "DDD", "EEE"]):
+            store.upsert_ohlcv(_bars(symbol, start, 30, start_price=100.0 + idx, step=1.0 + idx * 0.2))
+        pipeline = BacktestDatasetPipeline(settings=settings, store=store)
+
+        evaluation = pipeline.evaluate_engine_scores(
+            symbols=["AAA", "BBB", "CCC", "DDD", "EEE"],
+            start=start,
+            end=start + timedelta(days=40),
+            horizons=[1, 5],
+            min_history_rows=10,
+            min_lookback=5,
+            score_type="conviction",
+        )
+
+        assert evaluation["score_rows"] > 0
+        assert evaluation["factor_coverage"]["financial_statements"]["coverage"] == 0.0
+        assert Path(str(evaluation["artifacts"]["report_json"])).exists()
+    finally:
+        store.close()
+
+
 def test_engine_score_builder_uses_engine_scoring_stack(tmp_path: Path) -> None:
     store = MarketDataStore(str(tmp_path / "market.db"))
     start = date(2026, 1, 1)
@@ -131,6 +166,80 @@ def test_engine_score_builder_uses_engine_scoring_stack(tmp_path: Path) -> None:
         assert rows[0].feature_version == "engine_feature_stack.v1"
         assert rows[0].to_flat_dict()["model_version"] == "engine_scoring.v1"
         assert "swing_trend_strength" in rows[0].components
+    finally:
+        store.close()
+
+
+def test_engine_score_builder_uses_point_in_time_fundamentals(tmp_path: Path) -> None:
+    store = MarketDataStore(str(tmp_path / "market.db"))
+    start = date(2026, 1, 1)
+    try:
+        store.upsert_ohlcv(_bars("AAA", start, 30, start_price=100.0, step=1.0))
+        store.upsert_financial_statements(
+            [
+                FinancialStatementRecord(
+                    venue="NSE",
+                    symbol="AAA",
+                    period_end=date(2025, 3, 31),
+                    filing_date=date(2025, 4, 30),
+                    statement_type="annual",
+                    revenue=1000.0,
+                    ebit=220.0,
+                    net_income=180.0,
+                    operating_cash_flow=260.0,
+                    capex=40.0,
+                    total_debt=100.0,
+                    equity=500.0,
+                    total_assets=1200.0,
+                    current_assets=450.0,
+                    current_liabilities=250.0,
+                    interest_expense=20.0,
+                    source_id="fy25",
+                )
+            ]
+        )
+        store.upsert_equity_valuations(
+            [
+                EquityValuationRecord(
+                    venue="NSE",
+                    symbol="AAA",
+                    as_of=date(2025, 12, 31),
+                    market_cap=1800.0,
+                    shares_outstanding=100.0,
+                    source_id="valuation",
+                )
+            ]
+        )
+        store.upsert_shareholding(
+            [
+                ShareholdingRecord(
+                    venue="NSE",
+                    symbol="AAA",
+                    period_end=date(2025, 9, 30),
+                    filing_date=date(2025, 10, 20),
+                    promoter_pct=52.0,
+                    fii_pct=12.0,
+                    dii_pct=16.0,
+                    public_pct=20.0,
+                    source_id="shareholding",
+                )
+            ]
+        )
+
+        rows = EngineScoreDatasetBuilder(store=store, min_lookback=5).build_scores(
+            symbols=["AAA"],
+            start=start,
+            end=start + timedelta(days=40),
+            max_horizon=5,
+            score_type="long_term",
+        )
+
+        assert rows
+        first = rows[0]
+        assert first.components["long_profitability_quality"] > 0.0
+        assert first.components["long_cash_flow_quality"] > 0.0
+        assert first.components["long_balance_sheet_health"] > 0.0
+        assert first.components["long_governance_proxy"] > 0.0
     finally:
         store.close()
 

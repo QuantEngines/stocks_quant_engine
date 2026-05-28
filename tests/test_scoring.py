@@ -12,6 +12,7 @@ from stock_screener_engine.core.scoring import (
     SwingWeights,
     build_score_card,
 )
+from stock_screener_engine.core.scoring_conviction import ConvictionScorer
 
 
 def _rich_fv(symbol: str = "TEST") -> FeatureVector:
@@ -44,6 +45,9 @@ def test_score_card_ranges() -> None:
     assert 0.0 <= card.swing_score <= 100.0
     assert 0.0 <= card.risk_penalty <= 30.0
     assert 0.0 <= card.conviction <= 100.0
+    assert "conviction_score_strength" in card.component_scores
+    assert "conviction_data_completeness" in card.component_scores
+    assert "risk_earnings_instability_risk" in card.component_scores
 
 
 def test_zero_features_produce_zero_score() -> None:
@@ -104,6 +108,49 @@ def test_configurable_swing_weights_change_score() -> None:
     )
     # With event_catalyst=0.4 and positive contribution, zeroing weight should reduce
     assert no_catalyst_card.swing_score < default_card.swing_score
+
+
+def test_conviction_evidence_can_discount_same_score_strength() -> None:
+    fv = _rich_fv()
+    weak_evidence = FeatureVector(
+        symbol=fv.symbol,
+        as_of=fv.as_of,
+        values={**fv.values, "backtest_hit_rate": 0.2, "source_confidence": 0.3},
+    )
+    strong_evidence = FeatureVector(
+        symbol=fv.symbol,
+        as_of=fv.as_of,
+        values={**fv.values, "backtest_hit_rate": 0.8, "source_confidence": 0.9},
+    )
+
+    scorer = ConvictionScorer()
+    weak = build_score_card(weak_evidence, LongTermScorer(), SwingScorer(), RiskPenaltyScorer(), scorer)
+    strong = build_score_card(strong_evidence, LongTermScorer(), SwingScorer(), RiskPenaltyScorer(), scorer)
+
+    assert strong.component_scores["conviction_backtest_evidence"] > weak.component_scores["conviction_backtest_evidence"]
+    assert strong.component_scores["conviction_source_confidence"] > weak.component_scores["conviction_source_confidence"]
+    assert strong.conviction > weak.conviction
+
+
+def test_conviction_penalizes_cross_horizon_disagreement() -> None:
+    scorer = ConvictionScorer()
+
+    aligned = scorer.score(
+        {},
+        adjusted_long_score=70.0,
+        adjusted_swing_score=70.0,
+        risk_penalty=5.0,
+    )
+    conflicted = scorer.score(
+        {},
+        adjusted_long_score=95.0,
+        adjusted_swing_score=45.0,
+        risk_penalty=5.0,
+    )
+
+    assert aligned.components["score_strength"] == conflicted.components["score_strength"]
+    assert aligned.components["signal_agreement"] > conflicted.components["signal_agreement"]
+    assert aligned.score > conflicted.score
 
 
 def test_swing_catalyst_component_is_split_not_double_counted() -> None:

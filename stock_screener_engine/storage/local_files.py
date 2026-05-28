@@ -78,7 +78,13 @@ class LocalFileStorage:
     def save_json(self, payload: dict | list, filename: str, subdir: str = "raw") -> Path:
         target_dir = self._resolve_subdir(subdir)
         output = target_dir / filename
-        output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        output.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        return output
+
+    def save_text(self, payload: str, filename: str, subdir: str = "raw") -> Path:
+        target_dir = self._resolve_subdir(subdir)
+        output = target_dir / filename
+        output.write_text(payload, encoding="utf-8")
         return output
 
     def save_rows_csv(self, rows: list[dict], filename: str, subdir: str = "cleaned") -> Path:

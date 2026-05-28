@@ -18,8 +18,21 @@ def test_load_default_settings() -> None:
     assert settings.scoring.ranking.portfolio.min_position_notional >= 0
     assert settings.scoring.ranking.portfolio.long_min_position_notional is None
     assert settings.scoring.ranking.portfolio.swing_sector_target_weights is None
+    assert settings.scoring.conviction_weights.data_completeness > 0
     assert settings.documents.enabled is True
     assert settings.output.include_signal_reports is True
+    assert any(source.source_id == "finedge" for source in settings.data_entitlements.sources)
+    finedge = next(source for source in settings.data_entitlements.sources if source.source_id == "finedge")
+    assert finedge.plan_name == "Basic Free"
+    assert finedge.allowed_symbols == ["ITC", "RELIANCE", "HDFCBANK"]
+
+
+def test_calibration_report_path_follows_storage_root(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("SSE_STORAGE_ROOT", str(tmp_path))
+    settings = load_settings()
+    assert settings.scoring.calibration_auto_tune.report_path == str(
+        tmp_path / "calibration" / "calibration_report_latest.json"
+    )
 
 
 def test_portfolio_per_strategy_overrides_parse(tmp_path: Path) -> None:

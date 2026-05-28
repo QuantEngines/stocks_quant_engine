@@ -153,6 +153,54 @@ def test_cli_data_quality_delegates(monkeypatch, capsys) -> None:
     assert '"coverage": 1.0' in out
 
 
+def test_cli_data_source_coverage_emits_markdown(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_data_source_coverage",
+        lambda **kwargs: {
+            "pipeline": "data_source_coverage",
+            "as_of": kwargs["as_of"].isoformat(),
+            "start": kwargs["start"].isoformat(),
+            "console_rows": [{"kind": "domain", "name": "Daily OHLCV"}],
+            "markdown": "# Data Source Coverage\n",
+        },
+    )
+
+    cli_main.main(["data-source-coverage", "--end", "2026-05-28", "--lookback-years", "5", "--format", "markdown"])
+    out = capsys.readouterr().out
+
+    assert out.startswith("# Data Source Coverage")
+
+
+def test_cli_data_entitlements_emits_table(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_data_entitlements",
+        lambda **kwargs: {
+            "pipeline": "data_entitlements",
+            "sources": [
+                {
+                    "display_name": "FinEdge",
+                    "plan_name": "Basic Free",
+                    "status": "basic_sandbox",
+                    "enabled": True,
+                    "entitled_symbol_count": 3,
+                    "entitlement_coverage": 0.06,
+                    "storage_rights": "vendor_terms_required",
+                    "redistribution_rights": "not_confirmed",
+                }
+            ],
+            "markdown": "# Data Entitlements\n",
+        },
+    )
+
+    cli_main.main(["data-entitlements", "--symbols", "ITC,RELIANCE,HDFCBANK", "--format", "table"])
+    out = capsys.readouterr().out
+
+    assert "FinEdge" in out
+    assert "Basic Free" in out
+
+
 def test_cli_refresh_market_delegates(monkeypatch, capsys) -> None:
     monkeypatch.delenv("SSE_MARKET_PROVIDER", raising=False)
     monkeypatch.setattr(
@@ -234,6 +282,221 @@ def test_cli_broker_health_delegates(monkeypatch, capsys) -> None:
     assert '"source": "zerodha"' in out
     assert '"quote_coverage": 1.0' in out
     assert '"historical_coverage": 1.0' in out
+
+
+def test_cli_indianapi_probe_delegates(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_indianapi_probe",
+        lambda **kwargs: {
+            "pipeline": "indianapi_probe",
+            "symbols": kwargs["symbols"],
+            "checks": kwargs["checks"],
+            "stock_base_url": kwargs["stock_base_url"],
+            "coverage": {"stock": {"ok": 2, "total": 2, "coverage": 1.0, "sample_errors": []}},
+        },
+    )
+
+    cli_main.main([
+        "indianapi-probe",
+        "--symbols",
+        "AAA,BBB",
+        "--check",
+        "stock,financials",
+        "--stock-base-url",
+        "https://stock.example.test",
+        "--format",
+        "table",
+    ])
+    out = capsys.readouterr().out
+
+    assert '"check": "stock"' in out
+    assert '"coverage": 1.0' in out
+
+
+def test_cli_fmp_probe_delegates(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_fmp_probe",
+        lambda **kwargs: {
+            "pipeline": "fmp_probe",
+            "symbols": kwargs["symbols"],
+            "checks": kwargs["checks"],
+            "base_url": kwargs["base_url"],
+            "price_start": kwargs["price_start"].isoformat(),
+            "price_end": kwargs["price_end"].isoformat(),
+            "coverage": {
+                "income_statement": {
+                    "ok": 2,
+                    "total": 2,
+                    "coverage": 1.0,
+                    "sample_resolved_symbols": ["AAA.NS"],
+                    "sample_errors": [],
+                }
+            },
+        },
+    )
+
+    cli_main.main([
+        "fmp-probe",
+        "--symbols",
+        "AAA,BBB",
+        "--check",
+        "income_statement,ratios",
+        "--base-url",
+        "https://fmp.example.test",
+        "--price-start",
+        "2026-01-01",
+        "--price-end",
+        "2026-05-01",
+        "--format",
+        "table",
+    ])
+    out = capsys.readouterr().out
+
+    assert '"check": "income_statement"' in out
+    assert '"sample_resolved_symbols": [' in out
+    assert '"AAA.NS"' in out
+
+
+def test_cli_finedge_probe_delegates(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_finedge_probe",
+        lambda **kwargs: {
+            "pipeline": "finedge_probe",
+            "symbols": kwargs["symbols"],
+            "checks": kwargs["checks"],
+            "statement_type": kwargs["statement_type"],
+            "statement_code": kwargs["statement_code"],
+            "coverage": {
+                "financials": {
+                    "ok": 2,
+                    "total": 2,
+                    "coverage": 1.0,
+                    "sample_errors": [],
+                }
+            },
+        },
+    )
+
+    cli_main.main([
+        "finedge-probe",
+        "--symbols",
+        "ITC,RELIANCE",
+        "--check",
+        "financials,ratios",
+        "--statement-type",
+        "c",
+        "--statement-code",
+        "pl",
+        "--format",
+        "table",
+    ])
+    out = capsys.readouterr().out
+
+    assert '"check": "financials"' in out
+    assert '"coverage": 1.0' in out
+
+
+def test_cli_finedge_inspect_delegates(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_finedge_inspect",
+        lambda **kwargs: {
+            "pipeline": "finedge_schema_inspection",
+            "symbols": kwargs["symbols"],
+            "checks": kwargs["checks"],
+            "statement_type": kwargs["statement_type"],
+            "statement_code": kwargs["statement_code"],
+            "symbol_reports": [
+                {
+                    "symbol": "ITC",
+                    "checks": {
+                        "financials": {
+                            "ok": True,
+                            "error": "",
+                            "summary": {
+                                "root_type": "dict",
+                                "record_set_count": 1,
+                                "primary_record_set": {
+                                    "path": "$.financials",
+                                    "item_count": 8,
+                                    "field_count": 24,
+                                    "fields": ["period", "revenue"],
+                                    "date_like_fields": ["period"],
+                                    "numeric_like_fields": ["revenue"],
+                                },
+                            },
+                        }
+                    },
+                }
+            ],
+            "market_report": {"checks": {}},
+        },
+    )
+
+    cli_main.main([
+        "finedge-inspect",
+        "--symbols",
+        "ITC",
+        "--check",
+        "financials",
+        "--statement-type",
+        "c",
+        "--statement-code",
+        "pl",
+        "--format",
+        "table",
+    ])
+    out = capsys.readouterr().out
+
+    assert '"scope": "ITC"' in out
+    assert '"check": "financials"' in out
+    assert '"primary_path": "$.financials"' in out
+    assert '"revenue"' in out
+
+
+def test_cli_finedge_factor_export_delegates(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_finedge_factor_export",
+        lambda **kwargs: {
+            "pipeline": "finedge_factor_export",
+            "symbols": kwargs["symbols"],
+            "as_of": kwargs["as_of"].isoformat(),
+            "output_root": kwargs["output_root"],
+            "sections": kwargs["sections"],
+            "passed": True,
+            "row_counts": {"financials": 2, "valuations": 2, "shareholding": 1, "ownership_details": 3},
+            "files": {
+                "financials": {"path": "factor_root/financials.csv", "rows": 2},
+                "valuations": {"path": "factor_root/valuations.csv", "rows": 2},
+                "shareholding": {"path": "factor_root/shareholding.csv", "rows": 1},
+                "ownership_details": {"path": "factor_root/finedge_ownership_details.csv", "rows": 3},
+            },
+            "issues": [],
+        },
+    )
+
+    cli_main.main([
+        "finedge-factor-export",
+        "--symbols",
+        "ITC,RELIANCE",
+        "--as-of",
+        "2026-05-28",
+        "--output-root",
+        "factor_root",
+        "--sections",
+        "financials,shareholding",
+        "--format",
+        "table",
+    ])
+    out = capsys.readouterr().out
+
+    assert '"section": "financials"' in out
+    assert '"rows": 2' in out
+    assert "factor_root/financials.csv" in out
 
 
 def test_cli_backtest_readiness_delegates(monkeypatch, capsys) -> None:
@@ -358,6 +621,39 @@ def test_cli_engine_backtest_delegates(monkeypatch, capsys) -> None:
     assert '"pipeline": "engine_score_backtest"' in out
     assert '"score_type": "swing"' in out
     assert '"round_trip_cost_bps": 35.0' in out
+
+
+def test_cli_conviction_calibrate_delegates(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_conviction_calibration",
+        lambda **kwargs: {
+            "pipeline": "conviction_calibration",
+            "score_type": kwargs["score_type"],
+            "horizons": kwargs["horizons"],
+            "output_path": kwargs["output_path"],
+        },
+    )
+
+    cli_main.main([
+        "conviction-calibrate",
+        "--end",
+        "2026-05-18",
+        "--lookback-years",
+        "5",
+        "--symbols",
+        "AAA,BBB",
+        "--horizons",
+        "5,20",
+        "--output-path",
+        "/tmp/calibration_report_latest.json",
+    ])
+    out = capsys.readouterr().out
+
+    assert '"pipeline": "conviction_calibration"' in out
+    assert '"score_type": "conviction"' in out
+    assert '"horizons": [' in out
+    assert '"/tmp/calibration_report_latest.json"' in out
 
 
 def test_cli_security_master_ingest_delegates(monkeypatch, capsys) -> None:
@@ -511,3 +807,30 @@ def test_cli_factor_ingest_delegates(monkeypatch, capsys) -> None:
 
     assert '"pipeline": "factor_bootstrap_ingest"' in out
     assert '"min_coverage": 0.8' in out
+
+
+def test_cli_factor_qa_delegates(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_factor_qa",
+        lambda **kwargs: {
+            "pipeline": "factor_qa",
+            "as_of": kwargs["as_of"].isoformat(),
+            "console_rows": [{"symbol": "AAA", "status": "ok"}],
+            "markdown": "# QA",
+        },
+    )
+
+    cli_main.main([
+        "factor-qa",
+        "--as-of",
+        "2026-05-01",
+        "--symbols",
+        "AAA,BBB",
+        "--format",
+        "table",
+    ])
+    out = capsys.readouterr().out
+
+    assert '"symbol": "AAA"' in out
+    assert '"status": "ok"' in out

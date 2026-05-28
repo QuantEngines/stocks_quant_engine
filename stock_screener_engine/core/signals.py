@@ -70,13 +70,13 @@ class SignalGenerator:
             score=score_card.long_term_score,
             top_positive_drivers=modular_signal.drivers.top_positive,
             top_negative_drivers=modular_signal.drivers.top_negative,
-            ranking_reason=f"final score={modular_signal.final_score:.1f}, conviction={modular_signal.conviction:.1f}",
+            ranking_reason=f"final score={modular_signal.final_score:.1f}, conviction={score_card.conviction:.1f}",
             rejection_reason=(
                 None if modular_signal.signal_category.endswith("candidate") else "; ".join(modular_signal.rejection_reasons)
             ),
             holding_horizon=modular_signal.horizon,
             risk_flags=list(risk_flags),
-            confidence=modular_signal.conviction,
+            confidence=score_card.conviction,
             entry_logic="Staggered accumulation on valuation comfort",
             invalidation_logic="Review thesis if quality and cash flow degrade",
         )
@@ -131,13 +131,13 @@ class SignalGenerator:
             score=score_card.swing_score,
             top_positive_drivers=modular_signal.drivers.top_positive,
             top_negative_drivers=modular_signal.drivers.top_negative,
-            ranking_reason=f"final score={modular_signal.final_score:.1f}, conviction={modular_signal.conviction:.1f}",
+            ranking_reason=f"final score={modular_signal.final_score:.1f}, conviction={score_card.conviction:.1f}",
             rejection_reason=(
                 None if modular_signal.signal_category.endswith("candidate") else "; ".join(modular_signal.rejection_reasons)
             ),
             holding_horizon=modular_signal.horizon,
             risk_flags=list(risk_flags),
-            confidence=modular_signal.conviction,
+            confidence=score_card.conviction,
             entry_logic="Enter on pullback to support with volume confirmation",
             invalidation_logic="Exit if trend breaks and catalyst fades",
         )

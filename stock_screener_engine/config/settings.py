@@ -80,6 +80,16 @@ class RiskWeightsSettings:
 
 
 @dataclass(frozen=True)
+class ConvictionWeightsSettings:
+    signal_agreement: float = 0.20
+    data_completeness: float = 0.20
+    source_confidence: float = 0.10
+    backtest_evidence: float = 0.10
+    sector_regime_confirmation: float = 0.15
+    risk_resilience: float = 0.25
+
+
+@dataclass(frozen=True)
 class NlpSettings:
     enabled: bool = False
     enable_sentiment: bool = True
@@ -133,6 +143,35 @@ class OutputSettings:
 
 
 @dataclass(frozen=True)
+class DataSourceEntitlementSettings:
+    source_id: str
+    display_name: str
+    role: str
+    status: str
+    plan_name: str = ""
+    enabled: bool = True
+    domains: list[str] = field(default_factory=list)
+    endpoint_groups: list[str] = field(default_factory=list)
+    allowed_symbols: list[str] = field(default_factory=list)
+    allowed_universes: list[str] = field(default_factory=list)
+    credential_envs: list[str] = field(default_factory=list)
+    rate_limit_per_minute: int | None = None
+    daily_call_limit: int | None = None
+    storage_rights: str = "review_required"
+    redistribution_rights: str = "not_confirmed"
+    commercial_use_rights: str = "not_confirmed"
+    license_status: str = "review_required"
+    known_limits: list[str] = field(default_factory=list)
+    next_action: str = ""
+    notes: str = ""
+
+
+@dataclass(frozen=True)
+class DataEntitlementRegistrySettings:
+    sources: list[DataSourceEntitlementSettings] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class RegimeSwitchingSettings:
     enabled: bool = True
     bull_threshold: float = 0.25
@@ -180,6 +219,7 @@ class ScoringSettings:
     long_term_weights: LongTermWeightsSettings = LongTermWeightsSettings()
     swing_weights: SwingWeightsSettings = SwingWeightsSettings()
     risk_weights: RiskWeightsSettings = RiskWeightsSettings()
+    conviction_weights: ConvictionWeightsSettings = ConvictionWeightsSettings()
     regime_switching: RegimeSwitchingSettings = RegimeSwitchingSettings()
     long_term_regime_profiles: dict[str, dict[str, float]] = field(default_factory=dict)
     swing_regime_profiles: dict[str, dict[str, float]] = field(default_factory=dict)
@@ -200,6 +240,7 @@ class AppSettings:
     scoring: ScoringSettings
     documents: DocumentProcessingSettings = DocumentProcessingSettings()
     output: OutputSettings = OutputSettings()
+    data_entitlements: DataEntitlementRegistrySettings = DataEntitlementRegistrySettings()
 
 
 def _to_bool(text: str | None, default: bool) -> bool:
@@ -229,17 +270,21 @@ def load_settings(config_path: str | None = None) -> AppSettings:
     runtime_data_raw = raw.get("runtime_data", {})
     documents_raw = raw.get("documents", {})
     output_raw = raw.get("output", {})
+    data_entitlements_raw = raw.get("data_entitlements", {})
     scoring_raw = raw.get("scoring", {})
 
     zerodha_raw = integrations_raw.get("zerodha", {})
     breeze_raw = integrations_raw.get("breeze", {})
 
+    storage_root = os.getenv("SSE_STORAGE_ROOT", storage_raw.get("root_dir", "./data"))
+    sqlite_path = os.getenv("SSE_SQLITE_PATH", storage_raw.get("sqlite_path", "./data/metadata.db"))
+
     return AppSettings(
         environment=os.getenv("SSE_ENV", raw.get("environment", "dev")),
         log_level=os.getenv("SSE_LOG_LEVEL", raw.get("log_level", "INFO")),
         storage=StorageSettings(
-            root_dir=os.getenv("SSE_STORAGE_ROOT", storage_raw.get("root_dir", "./data")),
-            sqlite_path=os.getenv("SSE_SQLITE_PATH", storage_raw.get("sqlite_path", "./data/metadata.db")),
+            root_dir=storage_root,
+            sqlite_path=sqlite_path,
         ),
         features=FeatureSettings(
             include_sentiment=_to_bool(os.getenv("SSE_INCLUDE_SENTIMENT"), features_raw.get("include_sentiment", True)),
@@ -328,10 +373,14 @@ def load_settings(config_path: str | None = None) -> AppSettings:
             long_term_weights=_parse_lt_weights(scoring_raw.get("long_term_weights", {})),
             swing_weights=_parse_swing_weights(scoring_raw.get("swing_weights", {})),
             risk_weights=_parse_risk_weights(scoring_raw.get("risk_weights", {})),
+            conviction_weights=_parse_conviction_weights(scoring_raw.get("conviction_weights", {})),
             regime_switching=_parse_regime_switching(scoring_raw.get("regime_switching", {})),
             long_term_regime_profiles=_parse_weight_profiles(scoring_raw.get("long_term_regime_profiles", {})),
             swing_regime_profiles=_parse_weight_profiles(scoring_raw.get("swing_regime_profiles", {})),
-            calibration_auto_tune=_parse_calibration_auto_tune(scoring_raw.get("calibration_auto_tune", {})),
+            calibration_auto_tune=_parse_calibration_auto_tune(
+                scoring_raw.get("calibration_auto_tune", {}),
+                storage_root=storage_root,
+            ),
             ranking=_parse_ranking(scoring_raw.get("ranking", {})),
         ),
         documents=DocumentProcessingSettings(
@@ -347,6 +396,7 @@ def load_settings(config_path: str | None = None) -> AppSettings:
                 output_raw.get("include_signal_reports", True),
             ),
         ),
+        data_entitlements=_parse_data_entitlements(data_entitlements_raw),
     )
 
 
@@ -367,6 +417,13 @@ def _parse_swing_weights(d: dict) -> SwingWeightsSettings:
 def _parse_risk_weights(d: dict) -> RiskWeightsSettings:
     defaults = RiskWeightsSettings()
     return RiskWeightsSettings(
+        **{k: float(d.get(k, getattr(defaults, k))) for k in defaults.__dataclass_fields__}
+    )
+
+
+def _parse_conviction_weights(d: dict) -> ConvictionWeightsSettings:
+    defaults = ConvictionWeightsSettings()
+    return ConvictionWeightsSettings(
         **{k: float(d.get(k, getattr(defaults, k))) for k in defaults.__dataclass_fields__}
     )
 
@@ -417,11 +474,22 @@ def _parse_weight_profiles(d: dict) -> dict[str, dict[str, float]]:
     return out
 
 
-def _parse_calibration_auto_tune(d: dict) -> CalibrationAutoTuneSettings:
+def _parse_calibration_auto_tune(d: dict, storage_root: str = "./data") -> CalibrationAutoTuneSettings:
     defaults = CalibrationAutoTuneSettings()
+    raw_report_path = str(d.get("report_path", defaults.report_path))
+    env_report_path = os.getenv("SSE_CALIBRATION_REPORT_PATH")
+    if env_report_path:
+        report_path = env_report_path
+    elif raw_report_path in {
+        "./data/calibration/calibration_report_latest.json",
+        "data/calibration/calibration_report_latest.json",
+    }:
+        report_path = str(Path(storage_root) / "calibration" / "calibration_report_latest.json")
+    else:
+        report_path = raw_report_path
     return CalibrationAutoTuneSettings(
         enabled=bool(d.get("enabled", defaults.enabled)),
-        report_path=str(d.get("report_path", defaults.report_path)),
+        report_path=report_path,
         learning_rate=float(d.get("learning_rate", defaults.learning_rate)),
     )
 
@@ -448,3 +516,62 @@ def _parse_csv_symbols(text: str | None, fallback: object) -> list[str]:
     if isinstance(fallback, list):
         return [str(x).strip().upper() for x in fallback if str(x).strip()]
     return []
+
+
+def _parse_data_entitlements(raw: object) -> DataEntitlementRegistrySettings:
+    if not isinstance(raw, dict):
+        return DataEntitlementRegistrySettings()
+    sources_raw = raw.get("sources", [])
+    if not isinstance(sources_raw, list):
+        return DataEntitlementRegistrySettings()
+    sources: list[DataSourceEntitlementSettings] = []
+    for item in sources_raw:
+        if not isinstance(item, dict):
+            continue
+        source_id = str(item.get("source_id", "")).strip()
+        display_name = str(item.get("display_name", source_id)).strip() or source_id
+        if not source_id:
+            continue
+        sources.append(
+            DataSourceEntitlementSettings(
+                source_id=source_id,
+                display_name=display_name,
+                role=str(item.get("role", "")).strip(),
+                status=str(item.get("status", "")).strip(),
+                plan_name=str(item.get("plan_name", "")).strip(),
+                enabled=bool(item.get("enabled", True)),
+                domains=_parse_string_list(item.get("domains")),
+                endpoint_groups=_parse_string_list(item.get("endpoint_groups")),
+                allowed_symbols=[symbol.upper() if symbol != "*" else "*" for symbol in _parse_string_list(item.get("allowed_symbols"))],
+                allowed_universes=_parse_string_list(item.get("allowed_universes")),
+                credential_envs=_parse_string_list(item.get("credential_envs")),
+                rate_limit_per_minute=_parse_optional_int(item.get("rate_limit_per_minute")),
+                daily_call_limit=_parse_optional_int(item.get("daily_call_limit")),
+                storage_rights=str(item.get("storage_rights", "review_required")).strip(),
+                redistribution_rights=str(item.get("redistribution_rights", "not_confirmed")).strip(),
+                commercial_use_rights=str(item.get("commercial_use_rights", "not_confirmed")).strip(),
+                license_status=str(item.get("license_status", "review_required")).strip(),
+                known_limits=_parse_string_list(item.get("known_limits")),
+                next_action=str(item.get("next_action", "")).strip(),
+                notes=str(item.get("notes", "")).strip(),
+            )
+        )
+    return DataEntitlementRegistrySettings(sources=sources)
+
+
+def _parse_string_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _parse_optional_int(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float, str)):
+        return int(value)
+    return None

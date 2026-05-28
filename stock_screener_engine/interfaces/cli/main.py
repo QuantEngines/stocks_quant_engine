@@ -12,14 +12,23 @@ from pathlib import Path
 from stock_screener_engine.app import (
     run_backtest_readiness,
     run_broker_health,
+    run_conviction_calibration,
     run_data_foundation,
+    run_data_entitlements,
     run_data_quality,
+    run_data_source_coverage,
     run_deepdive_report,
     run_document_ingest,
     run_engine_backtest,
     run_factor_ingest,
+    run_factor_qa,
     run_factor_template,
+    run_finedge_factor_export,
+    run_finedge_inspect,
+    run_finedge_probe,
+    run_fmp_probe,
     run_financials_ingest,
+    run_indianapi_probe,
     run_peer_report,
     run_screen,
     run_sector_rankings,
@@ -98,6 +107,27 @@ def main(argv: list[str] | None = None) -> None:
     quality.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
     quality.add_argument("--interval", default="1d")
 
+    source_coverage = subparsers.add_parser(
+        "data-source-coverage",
+        help="Aggregate canonical, broker, and vendor-trial data-source coverage",
+    )
+    source_coverage.add_argument("--start", default=None, help="Start date YYYY-MM-DD")
+    source_coverage.add_argument("--end", default=None, help="End/as-of date YYYY-MM-DD; defaults to today")
+    source_coverage.add_argument("--lookback-years", type=int, default=5, help="Compute start date from end date")
+    source_coverage.add_argument("--symbols", default="", help="Comma-separated symbol override")
+    source_coverage.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
+    source_coverage.add_argument("--venue", default=None)
+    source_coverage.add_argument("--interval", default="1d")
+    source_coverage.add_argument("--format", choices=["json", "table", "markdown"], default="markdown")
+
+    data_entitlements = subparsers.add_parser(
+        "data-entitlements",
+        help="Report configured data-source plans, endpoints, symbol entitlements, and licensing notes",
+    )
+    data_entitlements.add_argument("--symbols", default="", help="Comma-separated symbol override")
+    data_entitlements.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
+    data_entitlements.add_argument("--format", choices=["json", "table", "markdown"], default="markdown")
+
     refresh = subparsers.add_parser("refresh-market", help="Refresh canonical market data with retries and quality gates")
     refresh.add_argument("--start", default=None, help="Start date YYYY-MM-DD")
     refresh.add_argument("--end", default=None, help="End date YYYY-MM-DD; defaults to today")
@@ -127,6 +157,140 @@ def main(argv: list[str] | None = None) -> None:
     broker_health.add_argument("--primary-source", default="zerodha")
     broker_health.add_argument("--lagged-sources", default="icici_breeze", help="Comma-separated sources allowed one-session EOD lag")
     broker_health.add_argument("--format", choices=["json", "table"], default="json")
+
+    indianapi_probe = subparsers.add_parser(
+        "indianapi-probe",
+        help="Probe IndianAPI coverage for fundamentals, shareholding, analyst, and history endpoints",
+    )
+    indianapi_probe.add_argument("--symbols", required=True, help="Comma-separated symbols")
+    indianapi_probe.add_argument(
+        "--check",
+        default="stock,financials,shareholding,analyst,forecasts,history",
+        help=(
+            "Comma-separated checks: search,stock,financials,shareholding,analyst,"
+            "forecasts,history,corporate_actions,announcements,news,trending,"
+            "nse_most_active,bse_most_active,price_shockers,week_52,ipo,all"
+        ),
+    )
+    indianapi_probe.add_argument("--stock-base-url", default=None)
+    indianapi_probe.add_argument("--analyst-base-url", default=None)
+    indianapi_probe.add_argument("--api-key-env", default="SSE_INDIANAPI_API_KEY")
+    indianapi_probe.add_argument("--timeout-seconds", type=int, default=20)
+    indianapi_probe.add_argument("--retries", type=int, default=1)
+    indianapi_probe.add_argument("--retry-delay-seconds", type=float, default=0.5)
+    indianapi_probe.add_argument("--format", choices=["json", "table"], default="json")
+
+    fmp_probe = subparsers.add_parser(
+        "fmp-probe",
+        help="Probe Financial Modeling Prep coverage for Indian equity fundamentals and prices",
+    )
+    fmp_probe.add_argument("--symbols", required=True, help="Comma-separated symbols")
+    fmp_probe.add_argument(
+        "--check",
+        default="smoke",
+        help=(
+            "Comma-separated checks: search,profile,quote,income_statement,balance_sheet,"
+            "cash_flow,ratios,key_metrics,enterprise_values,market_cap,shares_float,"
+            "price_history,analyst_estimates,ratings,grades,transcripts,statements,financials,smoke,all"
+        ),
+    )
+    fmp_probe.add_argument("--base-url", default=None)
+    fmp_probe.add_argument("--api-key-env", default="SSE_FMP_API_KEY")
+    fmp_probe.add_argument("--timeout-seconds", type=int, default=5)
+    fmp_probe.add_argument("--retries", type=int, default=0)
+    fmp_probe.add_argument("--retry-delay-seconds", type=float, default=0.5)
+    fmp_probe.add_argument("--period", choices=["annual", "quarter"], default="annual")
+    fmp_probe.add_argument("--limit", type=int, default=5)
+    fmp_probe.add_argument("--price-start", default=None, help="Optional price-history start date YYYY-MM-DD")
+    fmp_probe.add_argument("--price-end", default=None, help="Optional price-history end date YYYY-MM-DD")
+    fmp_probe.add_argument("--exact-symbols", action="store_true", help="Probe only the submitted symbols without .NS/.BO fallbacks")
+    fmp_probe.add_argument("--format", choices=["json", "table"], default="json")
+
+    finedge_probe = subparsers.add_parser(
+        "finedge-probe",
+        help="Probe FinEdge coverage for Indian fundamentals, ownership, prices, and events",
+    )
+    finedge_probe.add_argument("--symbols", required=True, help="Comma-separated symbols")
+    finedge_probe.add_argument(
+        "--check",
+        default="smoke",
+        help=(
+            "Comma-separated checks: stock_symbols,company_profile,financials,segment_revenue,"
+            "notes,ratios,financial_metrics,basic_financials,quote,daily_quotes,"
+            "daily_price_ratios,annual_price_ratios,shareholding_pattern,"
+            "shareholding_summary,ownership_current,ownership_history,beneficial_owners,"
+            "declarations,corporate_actions,dividends,announcements,credit_ratings,"
+            "investor_presentations,investor_call_transcripts,results_calendar,ipo_calendar,"
+            "index_master,index_market_history,index_valuation_history,health,smoke,"
+            "fundamentals,ownership,events,prices,all"
+        ),
+    )
+    finedge_probe.add_argument("--base-url", default=None)
+    finedge_probe.add_argument("--api-key-env", default="SSE_FINEDGE_API_KEY")
+    finedge_probe.add_argument("--timeout-seconds", type=int, default=8)
+    finedge_probe.add_argument("--retries", type=int, default=0)
+    finedge_probe.add_argument("--retry-delay-seconds", type=float, default=0.5)
+    finedge_probe.add_argument("--statement-type", default="s", help="FinEdge statement_type, e.g. s or c")
+    finedge_probe.add_argument("--statement-code", default="pl", help="FinEdge statement_code, e.g. pl/bs/cf")
+    finedge_probe.add_argument("--period", default="annual")
+    finedge_probe.add_argument("--ratio-type", default="pr")
+    finedge_probe.add_argument("--metrics-ratio-type", default="gr")
+    finedge_probe.add_argument("--shareholding-period", default="quarterly")
+    finedge_probe.add_argument("--from-date", default=None)
+    finedge_probe.add_argument("--to-date", default=None)
+    finedge_probe.add_argument("--index-symbol", default="NIFTY 50")
+    finedge_probe.add_argument("--format", choices=["json", "table"], default="json")
+
+    finedge_inspect = subparsers.add_parser(
+        "finedge-inspect",
+        help="Inspect sanitized FinEdge response schemas for field mapping",
+    )
+    finedge_inspect.add_argument("--symbols", required=True, help="Comma-separated symbols")
+    finedge_inspect.add_argument(
+        "--check",
+        default="fundamentals",
+        help=(
+            "Comma-separated checks or aliases supported by finedge-probe, e.g. "
+            "fundamentals,ownership,prices,events,financials,ratios"
+        ),
+    )
+    finedge_inspect.add_argument("--base-url", default=None)
+    finedge_inspect.add_argument("--api-key-env", default="SSE_FINEDGE_API_KEY")
+    finedge_inspect.add_argument("--timeout-seconds", type=int, default=8)
+    finedge_inspect.add_argument("--retries", type=int, default=0)
+    finedge_inspect.add_argument("--retry-delay-seconds", type=float, default=0.5)
+    finedge_inspect.add_argument("--statement-type", default="s", help="FinEdge statement_type, e.g. s or c")
+    finedge_inspect.add_argument("--statement-code", default="pl", help="FinEdge statement_code, e.g. pl/bs/cf")
+    finedge_inspect.add_argument("--period", default="annual")
+    finedge_inspect.add_argument("--ratio-type", default="pr")
+    finedge_inspect.add_argument("--metrics-ratio-type", default="gr")
+    finedge_inspect.add_argument("--shareholding-period", default="quarterly")
+    finedge_inspect.add_argument("--from-date", default=None)
+    finedge_inspect.add_argument("--to-date", default=None)
+    finedge_inspect.add_argument("--index-symbol", default="NIFTY 50")
+    finedge_inspect.add_argument("--max-depth", type=int, default=4)
+    finedge_inspect.add_argument("--max-fields", type=int, default=80)
+    finedge_inspect.add_argument("--max-list-items", type=int, default=25)
+    finedge_inspect.add_argument("--format", choices=["json", "table"], default="json")
+
+    finedge_factor_export = subparsers.add_parser(
+        "finedge-factor-export",
+        help="Export FinEdge financials and ownership into reviewable factor CSVs",
+    )
+    finedge_factor_export.add_argument("--symbols", required=True, help="Comma-separated symbols")
+    finedge_factor_export.add_argument("--output-root", required=True, help="External/ignored output folder for factor CSVs")
+    finedge_factor_export.add_argument("--as-of", required=True, help="Point-in-time cutoff date YYYY-MM-DD")
+    finedge_factor_export.add_argument("--sections", default="financials,valuations,shareholding", help="financials,valuations,shareholding,banking,all")
+    finedge_factor_export.add_argument("--base-url", default=None)
+    finedge_factor_export.add_argument("--api-key-env", default="SSE_FINEDGE_API_KEY")
+    finedge_factor_export.add_argument("--timeout-seconds", type=int, default=8)
+    finedge_factor_export.add_argument("--retries", type=int, default=0)
+    finedge_factor_export.add_argument("--retry-delay-seconds", type=float, default=0.5)
+    finedge_factor_export.add_argument("--venue", default=None)
+    finedge_factor_export.add_argument("--statement-type", default="s", help="FinEdge statement_type, e.g. s or c")
+    finedge_factor_export.add_argument("--period", default="annual")
+    finedge_factor_export.add_argument("--shareholding-period", default="quarterly")
+    finedge_factor_export.add_argument("--format", choices=["json", "table"], default="json")
 
     readiness = subparsers.add_parser("backtest-readiness", help="Check if canonical data is backtest-ready")
     readiness.add_argument("--start", default=None, help="Start date YYYY-MM-DD")
@@ -180,6 +344,25 @@ def main(argv: list[str] | None = None) -> None:
     engine_backtest.add_argument("--round-trip-cost-bps", type=float, default=None)
     engine_backtest.add_argument("--slippage-bps", type=float, default=5.0)
 
+    conviction_calibrate = subparsers.add_parser(
+        "conviction-calibrate",
+        help="Run engine backtest and persist latest conviction evidence artifact",
+    )
+    conviction_calibrate.add_argument("--start", default=None, help="Start date YYYY-MM-DD")
+    conviction_calibrate.add_argument("--end", default=None, help="End date YYYY-MM-DD; defaults to today")
+    conviction_calibrate.add_argument("--lookback-years", type=int, default=5, help="Compute start date from end date")
+    conviction_calibrate.add_argument("--symbols", default="", help="Comma-separated symbol override")
+    conviction_calibrate.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
+    conviction_calibrate.add_argument("--universe-policy", choices=["current", "eligible_history"], default="eligible_history")
+    conviction_calibrate.add_argument("--score-type", choices=["swing", "long_term", "conviction"], default="conviction")
+    conviction_calibrate.add_argument("--min-history-rows", type=int, default=1000)
+    conviction_calibrate.add_argument("--min-lookback", type=int, default=220)
+    conviction_calibrate.add_argument("--horizons", default="5,20,60", help="Comma-separated forward-return horizons in bars")
+    conviction_calibrate.add_argument("--interval", default="1d")
+    conviction_calibrate.add_argument("--round-trip-cost-bps", type=float, default=None)
+    conviction_calibrate.add_argument("--slippage-bps", type=float, default=5.0)
+    conviction_calibrate.add_argument("--output-path", default=None, help="Optional explicit JSON artifact path")
+
     security_master = subparsers.add_parser("security-master-ingest", help="Ingest local CSV security master rows")
     security_master.add_argument("--file", required=True)
     security_master.add_argument("--venue", default=None)
@@ -216,6 +399,15 @@ def main(argv: list[str] | None = None) -> None:
     factor_ingest.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
     factor_ingest.add_argument("--venue", default=None)
     factor_ingest.add_argument("--min-coverage", type=float, default=1.0)
+    factor_ingest.add_argument("--sections", default="financials,valuations,shareholding", help="financials,valuations,shareholding,banking,all")
+
+    factor_qa = subparsers.add_parser("factor-qa", help="QA canonical factor coverage, latest values, and mapping warnings")
+    factor_qa.add_argument("--as-of", default=None, help="Point-in-time cutoff YYYY-MM-DD; defaults to today")
+    factor_qa.add_argument("--symbols", default="", help="Comma-separated symbol override")
+    factor_qa.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
+    factor_qa.add_argument("--venue", default=None)
+    factor_qa.add_argument("--statement-type", default=None, help="Optional canonical statement_type filter")
+    factor_qa.add_argument("--format", choices=["json", "table", "markdown"], default="table")
 
     explain = subparsers.add_parser("explain", help="Explain one stock's current signal")
     explain.add_argument("symbol")
@@ -338,6 +530,29 @@ def main(argv: list[str] | None = None) -> None:
         _emit(result)
         return
 
+    if args.command == "data-source-coverage":
+        start, end = _resolve_date_range(args, parser)
+        result = run_data_source_coverage(
+            as_of=end,
+            start=start,
+            symbols=_parse_symbols(args.symbols),
+            config_path=config_path,
+            interval=args.interval,
+            universe_file=args.universe_file,
+            venue=args.venue,
+        )
+        _emit(_data_source_coverage_payload(result, args.format), fmt=args.format)
+        return
+
+    if args.command == "data-entitlements":
+        result = run_data_entitlements(
+            symbols=_parse_symbols(args.symbols),
+            universe_file=args.universe_file,
+            config_path=config_path,
+        )
+        _emit(_data_entitlements_payload(result, args.format), fmt=args.format)
+        return
+
     if args.command == "refresh-market":
         start, end = _resolve_refresh_date_range(args)
         result = run_market_refresh(
@@ -374,6 +589,109 @@ def main(argv: list[str] | None = None) -> None:
             lagged_sources=_parse_symbols(args.lagged_sources),
         )
         _emit(_broker_health_payload(result, args.format), fmt=args.format)
+        return
+
+    if args.command == "indianapi-probe":
+        result = run_indianapi_probe(
+            symbols=_parse_symbols(args.symbols) or [],
+            checks=_parse_csv(args.check),
+            config_path=config_path,
+            stock_base_url=args.stock_base_url,
+            analyst_base_url=args.analyst_base_url,
+            api_key_env=args.api_key_env,
+            timeout_seconds=args.timeout_seconds,
+            retries=args.retries,
+            retry_delay_seconds=args.retry_delay_seconds,
+        )
+        _emit(_indianapi_probe_payload(result, args.format), fmt=args.format)
+        return
+
+    if args.command == "fmp-probe":
+        result = run_fmp_probe(
+            symbols=_parse_symbols(args.symbols) or [],
+            checks=_parse_csv(args.check),
+            config_path=config_path,
+            base_url=args.base_url,
+            api_key_env=args.api_key_env,
+            timeout_seconds=args.timeout_seconds,
+            retries=args.retries,
+            retry_delay_seconds=args.retry_delay_seconds,
+            period=args.period,
+            limit=args.limit,
+            price_start=date.fromisoformat(args.price_start) if args.price_start else None,
+            price_end=date.fromisoformat(args.price_end) if args.price_end else None,
+            exact_symbols=args.exact_symbols,
+        )
+        _emit(_fmp_probe_payload(result, args.format), fmt=args.format)
+        return
+
+    if args.command == "finedge-probe":
+        result = run_finedge_probe(
+            symbols=_parse_symbols(args.symbols) or [],
+            checks=_parse_csv(args.check),
+            config_path=config_path,
+            base_url=args.base_url,
+            api_key_env=args.api_key_env,
+            timeout_seconds=args.timeout_seconds,
+            retries=args.retries,
+            retry_delay_seconds=args.retry_delay_seconds,
+            statement_type=args.statement_type,
+            statement_code=args.statement_code,
+            period=args.period,
+            ratio_type=args.ratio_type,
+            metrics_ratio_type=args.metrics_ratio_type,
+            shareholding_period=args.shareholding_period,
+            from_date=args.from_date,
+            to_date=args.to_date,
+            index_symbol=args.index_symbol,
+        )
+        _emit(_finedge_probe_payload(result, args.format), fmt=args.format)
+        return
+
+    if args.command == "finedge-inspect":
+        result = run_finedge_inspect(
+            symbols=_parse_symbols(args.symbols) or [],
+            checks=_parse_csv(args.check),
+            config_path=config_path,
+            base_url=args.base_url,
+            api_key_env=args.api_key_env,
+            timeout_seconds=args.timeout_seconds,
+            retries=args.retries,
+            retry_delay_seconds=args.retry_delay_seconds,
+            statement_type=args.statement_type,
+            statement_code=args.statement_code,
+            period=args.period,
+            ratio_type=args.ratio_type,
+            metrics_ratio_type=args.metrics_ratio_type,
+            shareholding_period=args.shareholding_period,
+            from_date=args.from_date,
+            to_date=args.to_date,
+            index_symbol=args.index_symbol,
+            max_depth=args.max_depth,
+            max_fields=args.max_fields,
+            max_list_items=args.max_list_items,
+        )
+        _emit(_finedge_inspect_payload(result, args.format), fmt=args.format)
+        return
+
+    if args.command == "finedge-factor-export":
+        result = run_finedge_factor_export(
+            symbols=_parse_symbols(args.symbols) or [],
+            output_root=args.output_root,
+            as_of=date.fromisoformat(args.as_of),
+            config_path=config_path,
+            base_url=args.base_url,
+            api_key_env=args.api_key_env,
+            timeout_seconds=args.timeout_seconds,
+            retries=args.retries,
+            retry_delay_seconds=args.retry_delay_seconds,
+            venue=args.venue,
+            statement_type=args.statement_type,
+            period=args.period,
+            shareholding_period=args.shareholding_period,
+            sections=_parse_csv(args.sections),
+        )
+        _emit(_finedge_factor_export_payload(result, args.format), fmt=args.format)
         return
 
     if args.command == "backtest-readiness":
@@ -448,6 +766,27 @@ def main(argv: list[str] | None = None) -> None:
         _emit(result)
         return
 
+    if args.command == "conviction-calibrate":
+        start, end = _resolve_date_range(args, parser)
+        result = run_conviction_calibration(
+            start=start,
+            end=end,
+            symbols=_parse_symbols(args.symbols),
+            config_path=config_path,
+            interval=args.interval,
+            universe_file=args.universe_file,
+            universe_policy=args.universe_policy,
+            min_history_rows=args.min_history_rows,
+            min_lookback=args.min_lookback,
+            horizons=_parse_int_csv(args.horizons),
+            score_type=args.score_type,
+            round_trip_cost_bps=args.round_trip_cost_bps,
+            slippage_bps=args.slippage_bps,
+            output_path=args.output_path,
+        )
+        _emit(result)
+        return
+
     if args.command == "security-master-ingest":
         result = run_security_master_ingest(
             file_path=args.file,
@@ -511,8 +850,22 @@ def main(argv: list[str] | None = None) -> None:
             config_path=config_path,
             venue=args.venue,
             min_coverage=args.min_coverage,
+            sections=_parse_csv(args.sections),
         )
         _emit(result)
+        return
+
+    if args.command == "factor-qa":
+        as_of = date.fromisoformat(args.as_of) if args.as_of else date.today()
+        result = run_factor_qa(
+            as_of=as_of,
+            symbols=_parse_symbols(args.symbols),
+            universe_file=args.universe_file,
+            config_path=config_path,
+            venue=args.venue,
+            statement_type=args.statement_type,
+        )
+        _emit(_factor_qa_payload(result, args.format), fmt=args.format)
         return
 
     if args.command == "explain":
@@ -586,6 +939,155 @@ def _broker_health_payload(result: dict[str, object], fmt: str) -> object:
     return rows
 
 
+def _data_source_coverage_payload(result: dict[str, object], fmt: str) -> object:
+    if fmt == "markdown":
+        markdown = result.get("markdown")
+        return markdown if isinstance(markdown, str) else ""
+    if fmt == "table":
+        rows = result.get("console_rows")
+        return rows if isinstance(rows, list) else []
+    return result
+
+
+def _data_entitlements_payload(result: dict[str, object], fmt: str) -> object:
+    if fmt == "markdown":
+        markdown = result.get("markdown")
+        return markdown if isinstance(markdown, str) else ""
+    if fmt == "table":
+        rows = result.get("sources")
+        if not isinstance(rows, list):
+            return []
+        out = []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            out.append(
+                {
+                    "source": row.get("display_name"),
+                    "plan": row.get("plan_name"),
+                    "status": row.get("status"),
+                    "enabled": row.get("enabled"),
+                    "entitled_symbols": row.get("entitled_symbol_count"),
+                    "entitlement_coverage": row.get("entitlement_coverage"),
+                    "storage_rights": row.get("storage_rights"),
+                    "redistribution_rights": row.get("redistribution_rights"),
+                }
+            )
+        return out
+    return result
+
+
+def _indianapi_probe_payload(result: dict[str, object], fmt: str) -> object:
+    return _probe_coverage_payload(result, fmt)
+
+
+def _fmp_probe_payload(result: dict[str, object], fmt: str) -> object:
+    return _probe_coverage_payload(result, fmt)
+
+
+def _finedge_probe_payload(result: dict[str, object], fmt: str) -> object:
+    return _probe_coverage_payload(result, fmt)
+
+
+def _finedge_inspect_payload(result: dict[str, object], fmt: str) -> object:
+    if fmt != "table":
+        return result
+    rows = []
+    market_report = result.get("market_report")
+    if isinstance(market_report, Mapping):
+        rows.extend(_schema_rows_from_checks("market", market_report.get("checks")))
+    for symbol_report in result.get("symbol_reports", []):
+        if not isinstance(symbol_report, Mapping):
+            continue
+        scope = str(symbol_report.get("symbol") or "unknown")
+        rows.extend(_schema_rows_from_checks(scope, symbol_report.get("checks")))
+    return rows or _probe_coverage_payload(result, fmt)
+
+
+def _finedge_factor_export_payload(result: dict[str, object], fmt: str) -> object:
+    if fmt != "table":
+        return result
+    row_counts = result.get("row_counts") if isinstance(result.get("row_counts"), Mapping) else {}
+    files = result.get("files") if isinstance(result.get("files"), Mapping) else {}
+    issue_count = len(result.get("issues", [])) if isinstance(result.get("issues"), list) else 0
+    rows = []
+    for section in ("financials", "valuations", "shareholding", "banking", "ownership_details"):
+        file_info = files.get(section) if isinstance(files, Mapping) else None
+        rows.append(
+            {
+                "section": section,
+                "rows": row_counts.get(section, 0) if isinstance(row_counts, Mapping) else 0,
+                "path": file_info.get("path") if isinstance(file_info, Mapping) else "",
+                "passed": result.get("passed"),
+                "issues": issue_count,
+            }
+        )
+    return rows
+
+
+def _factor_qa_payload(result: dict[str, object], fmt: str) -> object:
+    if fmt == "table":
+        rows = result.get("console_rows")
+        return rows if isinstance(rows, list) else []
+    if fmt == "markdown":
+        markdown = result.get("markdown")
+        return markdown if isinstance(markdown, str) else ""
+    return result
+
+
+def _schema_rows_from_checks(scope: str, checks: object) -> list[dict[str, object]]:
+    if not isinstance(checks, Mapping):
+        return []
+    rows = []
+    for check, payload in checks.items():
+        if not isinstance(payload, Mapping):
+            continue
+        summary = payload.get("summary") if isinstance(payload.get("summary"), Mapping) else {}
+        primary = summary.get("primary_record_set") if isinstance(summary, Mapping) else None
+        if not isinstance(primary, Mapping):
+            primary = {}
+        rows.append(
+            {
+                "scope": scope,
+                "check": check,
+                "ok": payload.get("ok"),
+                "root_type": summary.get("root_type") if isinstance(summary, Mapping) else None,
+                "record_set_count": summary.get("record_set_count") if isinstance(summary, Mapping) else 0,
+                "primary_path": primary.get("path"),
+                "primary_rows": primary.get("item_count"),
+                "primary_field_count": primary.get("field_count"),
+                "primary_fields": list(primary.get("fields", []))[:20] if isinstance(primary.get("fields"), list) else [],
+                "date_like_fields": list(primary.get("date_like_fields", []))[:12] if isinstance(primary.get("date_like_fields"), list) else [],
+                "numeric_like_fields": list(primary.get("numeric_like_fields", []))[:12] if isinstance(primary.get("numeric_like_fields"), list) else [],
+                "error": payload.get("error", ""),
+            }
+        )
+    return rows
+
+
+def _probe_coverage_payload(result: dict[str, object], fmt: str) -> object:
+    if fmt != "table":
+        return result
+    coverage = result.get("coverage", {})
+    if not isinstance(coverage, Mapping):
+        return []
+    rows = []
+    for check, payload in coverage.items():
+        if not isinstance(payload, Mapping):
+            continue
+        rows.append(
+            {
+                "check": check,
+                "ok": payload.get("ok"),
+                "total": payload.get("total"),
+                "coverage": payload.get("coverage"),
+                "sample_resolved_symbols": payload.get("sample_resolved_symbols", []),
+                "sample_errors": payload.get("sample_errors", []),
+            }
+        )
+    return rows
+
+
 def _emit(payload: object, fmt: str = "json") -> None:
     if fmt == "markdown" and isinstance(payload, str):
         print(payload)
@@ -598,6 +1100,10 @@ def _emit(payload: object, fmt: str = "json") -> None:
 def _parse_symbols(text: str) -> list[str] | None:
     values = [part.strip().upper() for part in text.split(",") if part.strip()]
     return values or None
+
+
+def _parse_csv(text: str) -> list[str]:
+    return [part.strip() for part in text.split(",") if part.strip()]
 
 
 def _parse_int_csv(text: str) -> list[int]:

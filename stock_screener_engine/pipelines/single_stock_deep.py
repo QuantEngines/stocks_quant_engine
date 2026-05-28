@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
-from typing import Sequence, cast
+from typing import Any, Sequence, cast
 
 from stock_screener_engine.config.settings import AppSettings
 from stock_screener_engine.core.engine import ResearchEngine
-from stock_screener_engine.core.entities import FeatureVector, ScoreCard, SignalResult, StockSnapshot
+from stock_screener_engine.core.entities import FeatureVector, FundamentalsSnapshot, ScoreCard, SignalResult, StockSnapshot
 from stock_screener_engine.core.technical_indicators import atr, adx, momentum
 from stock_screener_engine.data_sources.base.interfaces import (
     FinancialsProvider,
@@ -133,15 +133,17 @@ def _build_enriched_snapshot(
     closes: list[float],
     vols: list[float],
     as_of: date,
+    metadata: dict[str, object] | None = None,
 ) -> StockSnapshot:
     """Build a StockSnapshot using real yfinance fundamentals where available."""
     close = closes[-1] if closes else 0.0
     volume = vols[-1] if vols else 0.0
+    sector = str((metadata or {}).get("sector") or yf_info.get("sector") or "Unknown")
 
     return StockSnapshot(
         symbol=symbol,
         as_of=as_of,
-        sector=yf_info.get("sector") or "Unknown",
+        sector=sector,
         close=close,
         volume=volume,
         delivery_ratio=0.5,
@@ -153,6 +155,117 @@ def _build_enriched_snapshot(
         promoter_holding_change=0.0,
         insider_activity_score=0.0,
     )
+
+
+def _provider_metadata(market_data: MarketDataProvider, symbol: str) -> dict[str, object]:
+    method = getattr(market_data, "get_company_metadata", None)
+    if not callable(method):
+        return {}
+    try:
+        metadata = method([symbol])
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not fetch canonical metadata for %s: %s", symbol, exc)
+        return {}
+    if not isinstance(metadata, dict):
+        return {}
+    row = metadata.get(symbol)
+    return row if isinstance(row, dict) else {}
+
+
+def _provider_fundamentals(
+    financials: FinancialsProvider | None,
+    symbol: str,
+    as_of: date,
+) -> FundamentalsSnapshot | None:
+    if financials is None:
+        return None
+    try:
+        as_of_method = getattr(financials, "get_fundamentals_as_of", None)
+        rows = as_of_method([symbol], as_of=as_of) if callable(as_of_method) else financials.get_fundamentals([symbol])
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not fetch canonical fundamentals for %s: %s", symbol, exc)
+        return None
+    if not isinstance(rows, dict):
+        return None
+    snapshot = rows.get(symbol)
+    return snapshot if isinstance(snapshot, FundamentalsSnapshot) else None
+
+
+def _provider_valuation(financials: FinancialsProvider | None, symbol: str, as_of: date) -> object | None:
+    store = getattr(financials, "store", None)
+    method = getattr(store, "latest_equity_valuation_as_of", None)
+    if not callable(method):
+        return None
+    venue = str(getattr(financials, "venue", "NSE") or "NSE")
+    try:
+        return method(symbol=symbol, as_of=as_of, venue=venue)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not fetch canonical valuation for %s: %s", symbol, exc)
+        return None
+
+
+def _fundamentals_payload(
+    *,
+    yf_info: dict[str, Any],
+    canonical: FundamentalsSnapshot | None,
+    valuation: object | None,
+) -> dict[str, object]:
+    if canonical is not None:
+        return {
+            "source": "canonical",
+            "as_of": canonical.as_of.isoformat(),
+            "pe_ratio": _round_metric(canonical.pe_ratio),
+            "pb_ratio": _round_metric(canonical.pb_ratio),
+            "roe_pct": _round_pct(canonical.roe),
+            "roa_pct": _round_pct(canonical.roa),
+            "roce_pct": _round_pct(canonical.roce),
+            "debt_to_equity": _round_metric(canonical.debt_to_equity),
+            "current_ratio": _round_metric(canonical.current_ratio),
+            "interest_coverage": _round_metric(canonical.interest_coverage),
+            "earnings_growth_pct": _round_pct(canonical.earnings_growth_yoy),
+            "revenue_growth_pct": _round_pct(canonical.revenue_growth_yoy),
+            "free_cash_flow_margin_pct": _round_pct(canonical.free_cash_flow_margin),
+            "operating_margin_pct": _round_pct(canonical.operating_margin),
+            "net_profit_margin_pct": _round_pct(canonical.net_profit_margin),
+            "market_cap": _valuation_attr(valuation, "market_cap"),
+            "shares_outstanding": _valuation_attr(valuation, "shares_outstanding"),
+            "market_cap_source": "canonical_valuation" if valuation is not None else None,
+            "supplemental_yfinance": {
+                "eps": yf_info.get("eps"),
+                "beta": yf_info.get("beta"),
+                "dividend_yield_raw": yf_info.get("dividend_yield"),
+            },
+        }
+
+    return {
+        "source": "yfinance" if yf_info else "unavailable",
+        "pe_ratio": yf_info.get("pe_ratio"),
+        "pb_ratio": yf_info.get("pb_ratio"),
+        "roe_pct": round(float(yf_info["roe"]) * 100.0, 2) if yf_info.get("roe") is not None else None,
+        "debt_to_equity": yf_info.get("debt_to_equity"),
+        "earnings_growth_pct": round(float(yf_info["earnings_growth"]) * 100.0, 2) if yf_info.get("earnings_growth") is not None else None,
+        "market_cap": yf_info.get("market_cap"),
+        "dividend_yield_pct": round(float(yf_info["dividend_yield"]) * 100.0, 2) if yf_info.get("dividend_yield") is not None else None,
+        "eps": yf_info.get("eps"),
+        "beta": yf_info.get("beta"),
+    }
+
+
+def _round_metric(value: float | None, digits: int = 6) -> float | None:
+    if value is None:
+        return None
+    return round(float(value), digits)
+
+
+def _round_pct(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return round(float(value) * 100.0, 2)
+
+
+def _valuation_attr(valuation: object | None, name: str) -> object | None:
+    value = getattr(valuation, name, None)
+    return value if value not in {0, 0.0} else None
 
 
 # ---------------------------------------------------------------------------
@@ -521,9 +634,12 @@ class SingleStockPipeline:
 
         # ── 2. Fundamental enrichment from yfinance ───────────────────────
         yf_info = _fetch_yf_info(symbol)
+        metadata = _provider_metadata(self.market_data, symbol)
+        canonical_fundamentals = _provider_fundamentals(self.financials, symbol, today)
+        canonical_valuation = _provider_valuation(self.financials, symbol, today)
 
         # ── 3. Build enriched snapshot ────────────────────────────────────
-        enriched = _build_enriched_snapshot(symbol, yf_info, closes, vols, today)
+        enriched = _build_enriched_snapshot(symbol, yf_info, closes, vols, today, metadata=metadata)
         patched_provider = _EnrichedSnapshotProvider(
             base=self.market_data,
             overrides={symbol: enriched},
@@ -617,9 +733,9 @@ class SingleStockPipeline:
         # ── 12. Assemble report ───────────────────────────────────────────
         return {
             "symbol": symbol,
-            "company_name": yf_info.get("company_name") or symbol,
-            "sector": yf_info.get("sector") or enriched.sector,
-            "industry": yf_info.get("industry"),
+            "company_name": metadata.get("company_name") or yf_info.get("company_name") or symbol,
+            "sector": metadata.get("sector") or yf_info.get("sector") or enriched.sector,
+            "industry": metadata.get("industry") or yf_info.get("industry"),
             "exchange": "NSE",
             "as_of": today.isoformat(),
 
@@ -645,17 +761,11 @@ class SingleStockPipeline:
                 "momentum_20d_pct": round(mom_20 * 100.0, 2),
             },
 
-            "fundamentals": {
-                "pe_ratio": yf_info.get("pe_ratio"),
-                "pb_ratio": yf_info.get("pb_ratio"),
-                "roe_pct": round(float(yf_info["roe"]) * 100.0, 2) if yf_info.get("roe") is not None else None,
-                "debt_to_equity": yf_info.get("debt_to_equity"),
-                "earnings_growth_pct": round(float(yf_info["earnings_growth"]) * 100.0, 2) if yf_info.get("earnings_growth") is not None else None,
-                "market_cap": yf_info.get("market_cap"),
-                "dividend_yield_pct": round(float(yf_info["dividend_yield"]) * 100.0, 2) if yf_info.get("dividend_yield") is not None else None,
-                "eps": yf_info.get("eps"),
-                "beta": yf_info.get("beta"),
-            },
+            "fundamentals": _fundamentals_payload(
+                yf_info=yf_info,
+                canonical=canonical_fundamentals,
+                valuation=canonical_valuation,
+            ),
 
             "scores": {
                 "long_term_score": round(long_score, 2),

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from stock_screener_engine.data_sources.schemas import (
+    BankingFactorRecord,
     CorporateActionRecord,
     EquityValuationRecord,
     FinancialStatementRecord,
@@ -150,6 +151,34 @@ class MarketDataStore:
                 fii_pct REAL NOT NULL,
                 dii_pct REAL NOT NULL,
                 public_pct REAL NOT NULL,
+                source_id TEXT NOT NULL DEFAULT '',
+                ingested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(venue, symbol, period_end, source_id)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS banking_factors (
+                venue TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                filing_date TEXT NOT NULL,
+                net_interest_income REAL NOT NULL DEFAULT 0,
+                net_interest_margin_pct REAL NOT NULL DEFAULT 0,
+                advances_growth_pct REAL NOT NULL DEFAULT 0,
+                deposits_growth_pct REAL NOT NULL DEFAULT 0,
+                casa_ratio_pct REAL NOT NULL DEFAULT 0,
+                gnpa_ratio_pct REAL NOT NULL DEFAULT 0,
+                nnpa_ratio_pct REAL NOT NULL DEFAULT 0,
+                provision_coverage_ratio_pct REAL NOT NULL DEFAULT 0,
+                credit_cost_pct REAL NOT NULL DEFAULT 0,
+                capital_adequacy_ratio_pct REAL NOT NULL DEFAULT 0,
+                cet1_ratio_pct REAL NOT NULL DEFAULT 0,
+                cost_to_income_ratio_pct REAL NOT NULL DEFAULT 0,
+                roa_pct REAL NOT NULL DEFAULT 0,
+                roe_pct REAL NOT NULL DEFAULT 0,
+                loan_to_deposit_ratio_pct REAL NOT NULL DEFAULT 0,
                 source_id TEXT NOT NULL DEFAULT '',
                 ingested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY(venue, symbol, period_end, source_id)
@@ -748,6 +777,106 @@ class MarketDataStore:
             "latest_period_by_symbol": available,
         }
 
+    def upsert_banking_factors(self, records: Iterable[BankingFactorRecord]) -> int:
+        rows = list(records)
+        self.conn.executemany(
+            """
+            INSERT OR REPLACE INTO banking_factors(
+                venue, symbol, period_end, filing_date, net_interest_income,
+                net_interest_margin_pct, advances_growth_pct, deposits_growth_pct,
+                casa_ratio_pct, gnpa_ratio_pct, nnpa_ratio_pct,
+                provision_coverage_ratio_pct, credit_cost_pct,
+                capital_adequacy_ratio_pct, cet1_ratio_pct,
+                cost_to_income_ratio_pct, roa_pct, roe_pct,
+                loan_to_deposit_ratio_pct, source_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    record.venue.upper(),
+                    record.symbol.upper(),
+                    record.period_end.isoformat(),
+                    record.filing_date.isoformat(),
+                    record.net_interest_income,
+                    record.net_interest_margin_pct,
+                    record.advances_growth_pct,
+                    record.deposits_growth_pct,
+                    record.casa_ratio_pct,
+                    record.gnpa_ratio_pct,
+                    record.nnpa_ratio_pct,
+                    record.provision_coverage_ratio_pct,
+                    record.credit_cost_pct,
+                    record.capital_adequacy_ratio_pct,
+                    record.cet1_ratio_pct,
+                    record.cost_to_income_ratio_pct,
+                    record.roa_pct,
+                    record.roe_pct,
+                    record.loan_to_deposit_ratio_pct,
+                    record.source_id,
+                )
+                for record in rows
+            ],
+        )
+        self.conn.commit()
+        return len(rows)
+
+    def get_banking_factors(
+        self,
+        symbol: str,
+        venue: str | None = None,
+        start: date | None = None,
+        end: date | None = None,
+        as_of: date | None = None,
+    ) -> list[BankingFactorRecord]:
+        query = "SELECT * FROM banking_factors WHERE symbol = ?"
+        params: list[object] = [symbol.strip().upper()]
+        if venue:
+            query += " AND venue = ?"
+            params.append(venue.strip().upper())
+        if start:
+            query += " AND period_end >= ?"
+            params.append(start.isoformat())
+        if end:
+            query += " AND period_end <= ?"
+            params.append(end.isoformat())
+        if as_of:
+            query += " AND period_end <= ? AND filing_date <= ?"
+            params.extend([as_of.isoformat(), as_of.isoformat()])
+        query += " ORDER BY period_end DESC, filing_date DESC"
+        cur = self.conn.cursor()
+        cur.execute(query, params)
+        return [_banking_factor_from_row(row) for row in cur.fetchall()]
+
+    def latest_banking_factor_as_of(
+        self,
+        symbol: str,
+        as_of: date,
+        venue: str | None = None,
+    ) -> BankingFactorRecord | None:
+        rows = self.get_banking_factors(symbol=symbol, venue=venue, as_of=as_of)
+        return rows[0] if rows else None
+
+    def banking_factor_coverage(
+        self,
+        symbols: Sequence[str],
+        as_of: date,
+        venue: str | None = None,
+    ) -> dict[str, object]:
+        requested = {s.strip().upper() for s in symbols if s.strip()}
+        available: dict[str, str] = {}
+        for symbol in requested:
+            latest = self.latest_banking_factor_as_of(symbol=symbol, as_of=as_of, venue=venue)
+            if latest is not None:
+                available[symbol] = latest.period_end.isoformat()
+        missing = sorted(requested - set(available))
+        return {
+            "symbols_requested": len(requested),
+            "symbols_with_banking_factors": len(available),
+            "missing_symbols": missing,
+            "coverage": round(len(available) / len(requested), 4) if requested else 0.0,
+            "latest_period_by_symbol": available,
+        }
+
     def coverage_summary(
         self,
         symbols: Sequence[str],
@@ -985,5 +1114,30 @@ def _shareholding_from_row(row: sqlite3.Row) -> ShareholdingRecord:
         fii_pct=float(row["fii_pct"]),
         dii_pct=float(row["dii_pct"]),
         public_pct=float(row["public_pct"]),
+        source_id=row["source_id"],
+    )
+
+
+def _banking_factor_from_row(row: sqlite3.Row) -> BankingFactorRecord:
+    return BankingFactorRecord(
+        venue=row["venue"],
+        symbol=row["symbol"],
+        period_end=date.fromisoformat(row["period_end"]),
+        filing_date=date.fromisoformat(row["filing_date"]),
+        net_interest_income=float(row["net_interest_income"]),
+        net_interest_margin_pct=float(row["net_interest_margin_pct"]),
+        advances_growth_pct=float(row["advances_growth_pct"]),
+        deposits_growth_pct=float(row["deposits_growth_pct"]),
+        casa_ratio_pct=float(row["casa_ratio_pct"]),
+        gnpa_ratio_pct=float(row["gnpa_ratio_pct"]),
+        nnpa_ratio_pct=float(row["nnpa_ratio_pct"]),
+        provision_coverage_ratio_pct=float(row["provision_coverage_ratio_pct"]),
+        credit_cost_pct=float(row["credit_cost_pct"]),
+        capital_adequacy_ratio_pct=float(row["capital_adequacy_ratio_pct"]),
+        cet1_ratio_pct=float(row["cet1_ratio_pct"]),
+        cost_to_income_ratio_pct=float(row["cost_to_income_ratio_pct"]),
+        roa_pct=float(row["roa_pct"]),
+        roe_pct=float(row["roe_pct"]),
+        loan_to_deposit_ratio_pct=float(row["loan_to_deposit_ratio_pct"]),
         source_id=row["source_id"],
     )

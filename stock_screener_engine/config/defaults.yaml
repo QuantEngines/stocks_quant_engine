@@ -56,6 +56,216 @@ output:
   default_format: json
   include_markdown: true
   include_signal_reports: true
+data_entitlements:
+  sources:
+    - source_id: nse_bse
+      display_name: NSE/BSE
+      role: Official exchange/reference source
+      status: primary_partial
+      plan_name: Official/public plus future licensed feeds
+      enabled: true
+      domains:
+        - security_master
+        - daily_ohlcv
+        - corporate_actions
+        - events_documents
+        - historical_universe
+        - delivery_turnover
+      endpoint_groups:
+        - bhavcopy
+        - delivery
+        - corporate_actions
+        - announcements
+        - filings
+        - historical_constituents
+      allowed_symbols:
+        - "*"
+      storage_rights: review_required
+      redistribution_rights: not_confirmed
+      commercial_use_rights: not_confirmed
+      license_status: review_required
+      known_limits:
+        - Public endpoints can throttle or return 403; production use may need official/licensed data terms.
+      next_action: Build robust bhavcopy, delivery, corporate-action, announcement, and historical-constituent ingestion.
+    - source_id: zerodha
+      display_name: Zerodha Kite Connect
+      role: Primary live/broker market-data and future execution source
+      status: primary_proven
+      plan_name: Broker API subscription
+      enabled: true
+      domains:
+        - live_quotes
+        - broker_history
+        - execution_readiness
+        - broker_reconciliation
+      endpoint_groups:
+        - quote
+        - historical
+        - instruments
+        - holdings
+        - positions
+        - orders
+      allowed_symbols:
+        - "*"
+      credential_envs:
+        - SSE_ZERODHA_API_KEY
+        - SSE_ZERODHA_API_SECRET
+        - SSE_ZERODHA_ACCESS_TOKEN
+      storage_rights: derived_internal_research
+      redistribution_rights: not_allowed_without_broker_exchange_permission
+      commercial_use_rights: broker_terms_apply
+      license_status: credentials_required
+      known_limits:
+        - Not a fundamentals, ownership, or document source.
+        - Historical/live use must respect broker and exchange rate limits.
+      next_action: Maintain index/instrument mapping, retry/backoff, and broker-health monitoring.
+    - source_id: icici_breeze
+      display_name: ICICI Breeze
+      role: Alternate broker/reconciliation source
+      status: primary_partial
+      plan_name: Broker API subscription
+      enabled: true
+      domains:
+        - live_quotes
+        - broker_history
+        - broker_reconciliation
+      endpoint_groups:
+        - quote
+        - historical
+        - names
+        - holdings
+        - positions
+        - orders
+      allowed_symbols:
+        - "*"
+      credential_envs:
+        - SSE_BREEZE_API_KEY
+        - SSE_BREEZE_API_SECRET
+        - SSE_BREEZE_SESSION_TOKEN
+      storage_rights: derived_internal_research
+      redistribution_rights: not_allowed_without_broker_exchange_permission
+      commercial_use_rights: broker_terms_apply
+      license_status: credentials_required
+      known_limits:
+        - Quote reliability and stock-code mapping need continued monitoring.
+        - EOD history can be one session lagged and should be treated as reconciliation when lagged.
+      next_action: Diagnose quote failures and decide whether Breeze is historical/reconciliation only.
+    - source_id: finedge
+      display_name: FinEdge
+      role: Primary paid-data candidate for fundamentals, valuation, ownership, events, and documents
+      status: basic_sandbox
+      plan_name: Basic Free
+      enabled: true
+      domains:
+        - financials
+        - valuations
+        - shareholding
+        - banking_factors
+        - events_documents
+        - index_data
+      endpoint_groups:
+        - company_profile
+        - financials
+        - ratios
+        - basic_financials
+        - quote
+        - daily_price_ratios
+        - shareholding
+        - ownership
+        - announcements
+        - credit_ratings
+        - investor_presentations
+        - investor_call_transcripts
+      allowed_symbols:
+        - ITC
+        - RELIANCE
+        - HDFCBANK
+      credential_envs:
+        - SSE_FINEDGE_API_KEY
+      rate_limit_per_minute: 300
+      storage_rights: vendor_terms_required_before_paid_scale
+      redistribution_rights: not_confirmed
+      commercial_use_rights: not_confirmed
+      license_status: basic_trial_confirmed
+      known_limits:
+        - Basic free plan is limited to ITC, Reliance, and HDFC Bank.
+        - Current paid decision must confirm Nifty 50/Nifty 500, quarterly history, bank fields, bulk limits, and licensing.
+      next_action: Upgrade or request sample-expanded access, then rerun probes, factor export, factor ingest, factor QA, and data-source coverage.
+    - source_id: yfinance
+      display_name: Yahoo Finance / yfinance
+      role: Development bootstrap and fallback market-data source
+      status: development_fallback
+      plan_name: Free/public library
+      enabled: true
+      domains:
+        - daily_ohlcv
+        - bootstrap_history
+      endpoint_groups:
+        - historical_prices
+        - profile_snapshot
+      allowed_symbols:
+        - "*"
+      storage_rights: development_only
+      redistribution_rights: not_confirmed
+      commercial_use_rights: not_confirmed
+      license_status: fallback_only
+      known_limits:
+        - Not a final institutional source for Indian fundamentals or ownership.
+      next_action: Keep as bootstrap/fallback and reconcile with broker/exchange/vendor data.
+    - source_id: indianapi
+      display_name: IndianAPI
+      role: Paused satellite API candidate
+      status: paused
+      plan_name: Free key trial
+      enabled: false
+      domains:
+        - analyst_estimates
+        - market_events
+        - satellite_signals
+      endpoint_groups:
+        - analyst
+        - forecasts
+        - corporate_actions
+        - trending
+      allowed_symbols:
+        - "*"
+      credential_envs:
+        - SSE_INDIANAPI_API_KEY
+      storage_rights: vendor_terms_required
+      redistribution_rights: not_confirmed
+      commercial_use_rights: not_confirmed
+      license_status: support_clarification_needed
+      known_limits:
+        - Free-key core stock, financial, shareholding, and history trials returned 400/403 style failures.
+      next_action: Wait for vendor response before any paid decision.
+    - source_id: fmp
+      display_name: Financial Modeling Prep
+      role: Paused global API candidate
+      status: paused
+      plan_name: Free key trial
+      enabled: false
+      domains:
+        - financials
+        - valuations
+        - analyst_estimates
+        - transcripts
+      endpoint_groups:
+        - profile
+        - statements
+        - ratios
+        - market_cap
+        - transcripts
+      allowed_symbols:
+        - "*"
+      credential_envs:
+        - SSE_FMP_API_KEY
+      storage_rights: vendor_terms_required
+      redistribution_rights: not_confirmed
+      commercial_use_rights: not_confirmed
+      license_status: rate_limited_unproven
+      known_limits:
+        - Current key hit HTTP 429 for India and AAPL controls; coverage is unproven.
+      next_action: Retry only after FinEdge and official-source priorities are clearer.
 integrations:
   zerodha:
     enabled: false
@@ -97,6 +307,13 @@ scoring:
     event_uncertainty_risk: 0.15
     governance_risk: 0.10
     text_uncertainty_risk: 0.05
+  conviction_weights:
+    signal_agreement: 0.20
+    data_completeness: 0.20
+    source_confidence: 0.10
+    backtest_evidence: 0.10
+    sector_regime_confirmation: 0.15
+    risk_resilience: 0.25
   regime_switching:
     enabled: true
     bull_threshold: 0.25

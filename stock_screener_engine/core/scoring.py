@@ -18,6 +18,7 @@ from stock_screener_engine.core.scoring_long_term import (
     LongTermCategoryWeights,
     LongTermInvestmentScorer,
 )
+from stock_screener_engine.core.scoring_conviction import ConvictionScorer
 from stock_screener_engine.core.scoring_risk import RiskPenaltyEngine, RiskPenaltyWeights
 from stock_screener_engine.core.scoring_swing import SwingCategoryWeights, SwingTradeScorer
 
@@ -186,6 +187,7 @@ class RiskPenaltyScorer:
             "liquidity_risk": result.components.get("liquidity_risk", 0.0),
             "event_risk": result.components.get("event_uncertainty_risk", 0.0),
             "leverage_risk": result.components.get("leverage_risk", 0.0),
+            "earnings_instability_risk": result.components.get("earnings_instability_risk", 0.0),
             "governance_risk": result.components.get("governance_risk", 0.0),
             "volatility_risk": result.components.get("volatility_risk", 0.0),
             "text_uncertainty_risk": result.components.get("text_uncertainty_risk", 0.0),
@@ -198,6 +200,7 @@ def build_score_card(
     long_term_scorer: LongTermScorer,
     swing_scorer: SwingScorer,
     risk_scorer: RiskPenaltyScorer,
+    conviction_scorer: ConvictionScorer | None = None,
 ) -> ScoreCard:
     long_score, long_components = long_term_scorer.score(fv)
     swing_score, swing_components = swing_scorer.score(fv)
@@ -205,12 +208,19 @@ def build_score_card(
 
     adjusted_long = _clamp_0_100(long_score - risk_penalty)
     adjusted_swing = _clamp_0_100(swing_score - risk_penalty)
-    conviction = _clamp_0_100((adjusted_long + adjusted_swing) / 2.0)
+    conviction_result = (conviction_scorer or ConvictionScorer(max_risk_penalty=risk_scorer.max_penalty)).score(
+        fv.values,
+        adjusted_long_score=adjusted_long,
+        adjusted_swing_score=adjusted_swing,
+        risk_penalty=risk_penalty,
+    )
+    conviction = conviction_result.score
 
     all_components = {
         **{f"long_{k}": v for k, v in long_components.items()},
         **{f"swing_{k}": v for k, v in swing_components.items()},
         **{f"risk_{k}": v for k, v in risk_components.items()},
+        **{f"conviction_{k}": v for k, v in conviction_result.components.items()},
     }
 
     return ScoreCard(

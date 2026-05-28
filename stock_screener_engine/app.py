@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import logging
 import os
 import time
@@ -16,11 +17,17 @@ from typing import cast
 from stock_screener_engine.config.settings import AppSettings, load_settings
 from stock_screener_engine.config.startup_validation import validate_startup_settings
 from stock_screener_engine.backtest.costs import IndianEquityCostModel
+from stock_screener_engine.core.conviction_evidence import load_backtest_evidence
 from stock_screener_engine.core.entities import FeatureVector, ScoreCard, SignalResult
 from stock_screener_engine.data_sources.broker.factory import build_broker_adapters
 from stock_screener_engine.data_sources.filings.exchange_filings_provider import ExchangeFilingsProvider
 from stock_screener_engine.data_sources.filings.null_filings_provider import NullFilingsProvider
 from stock_screener_engine.data_sources.filings.filings_adapter import FilingsAdapter
+from stock_screener_engine.data_sources.finedge import FinEdgeClient, FinEdgeFactorMapper, FinEdgeProbe, FinEdgeSchemaInspector
+from stock_screener_engine.data_sources.finedge.client import normalize_finedge_checks
+from stock_screener_engine.data_sources.fmp import FMPClient, FMPProbe
+from stock_screener_engine.data_sources.fmp.client import default_price_window, normalize_fmp_checks
+from stock_screener_engine.data_sources.indianapi import IndianAPIClient, IndianAPIProbe
 from stock_screener_engine.data_sources.news.generic_news_adapter import GenericNewsAdapter
 from stock_screener_engine.data_sources.news.free_news_provider import FreeRSSNewsProvider
 from stock_screener_engine.data_sources.transcripts.null_transcripts import NullTranscriptProvider
@@ -41,9 +48,15 @@ from stock_screener_engine.pipelines.backtest_readiness import (
 )
 from stock_screener_engine.pipelines.backtest_dataset import BacktestDatasetPipeline
 from stock_screener_engine.pipelines.daily_batch import DailyBatchPipeline
+from stock_screener_engine.pipelines.data_source_coverage import (
+    DataSourceCoverageReporter,
+    build_data_entitlement_report,
+    render_data_entitlements_markdown,
+)
 from stock_screener_engine.pipelines.data_foundation import DataFoundationPipeline
 from stock_screener_engine.pipelines.document_pipeline import DocumentIntelligencePipeline
 from stock_screener_engine.pipelines.factor_bootstrap import FactorBootstrapPipeline
+from stock_screener_engine.pipelines.factor_qa import CanonicalFactorQAReporter
 from stock_screener_engine.pipelines.intraday_update import IntradayUpdatePipeline
 from stock_screener_engine.pipelines.live_invalidation_daily import run_live_invalidation_daily_job
 from stock_screener_engine.reporting.signal_report import (
@@ -320,6 +333,540 @@ def run_broker_health(
         subdir="quality",
     )
     return report
+
+
+def run_indianapi_probe(
+    symbols: list[str],
+    checks: list[str],
+    config_path: str | None = None,
+    stock_base_url: str | None = None,
+    analyst_base_url: str | None = None,
+    api_key_env: str = "SSE_INDIANAPI_API_KEY",
+    timeout_seconds: int = 5,
+    retries: int = 0,
+    retry_delay_seconds: float = 0.5,
+) -> dict[str, object]:
+    """Probe IndianAPI coverage without writing canonical market/factor tables."""
+    settings = load_settings(config_path=config_path)
+    validate_startup_settings(settings)
+    configure_logging(settings.log_level)
+    api_key = os.getenv(api_key_env, "")
+    client = IndianAPIClient(
+        stock_base_url=stock_base_url or os.getenv("SSE_INDIANAPI_STOCK_BASE_URL", "https://stock.indianapi.in"),
+        analyst_base_url=analyst_base_url
+        or os.getenv("SSE_INDIANAPI_ANALYST_BASE_URL", "https://analyst.indianapi.in"),
+        api_key=api_key,
+        timeout_seconds=timeout_seconds,
+        retries=retries,
+        retry_delay_seconds=retry_delay_seconds,
+    )
+    symbol_names = _indianapi_symbol_names(settings, symbols)
+    report = IndianAPIProbe(client).run(symbols=symbols, checks=checks, symbol_names=symbol_names)
+    report["api_key_env"] = api_key_env
+    report["api_key_configured"] = bool(api_key)
+    report["stock_base_url"] = client.stock_base_url
+    report["analyst_base_url"] = client.analyst_base_url
+    if not api_key:
+        recommendations = list(report.get("recommendations", []))
+        recommendations.insert(0, f"Set {api_key_env} if your IndianAPI plan requires authentication.")
+        report["recommendations"] = recommendations
+    LocalFileStorage(settings.storage.root_dir).save_json(
+        report,
+        filename="indianapi_probe_report.json",
+        subdir="quality",
+    )
+    return cast(dict[str, object], report)
+
+
+def run_fmp_probe(
+    symbols: list[str],
+    checks: list[str],
+    config_path: str | None = None,
+    base_url: str | None = None,
+    api_key_env: str = "SSE_FMP_API_KEY",
+    timeout_seconds: int = 20,
+    retries: int = 1,
+    retry_delay_seconds: float = 0.5,
+    period: str = "annual",
+    limit: int = 5,
+    price_start: date | None = None,
+    price_end: date | None = None,
+    exact_symbols: bool = False,
+) -> dict[str, object]:
+    """Probe Financial Modeling Prep coverage without writing canonical tables."""
+    settings = load_settings(config_path=config_path)
+    validate_startup_settings(settings)
+    configure_logging(settings.log_level)
+    api_key, resolved_api_key_env = _resolve_fmp_api_key(api_key_env)
+    if price_start is None and price_end is None:
+        price_start, price_end = default_price_window()
+    normalized_checks = normalize_fmp_checks(checks)
+    if not api_key:
+        report = _missing_fmp_key_report(
+            symbols=symbols,
+            checks=normalized_checks,
+            api_key_env=api_key_env,
+            base_url=base_url or os.getenv("SSE_FMP_BASE_URL", "https://financialmodelingprep.com/stable"),
+            period=period,
+            limit=limit,
+            price_start=price_start,
+            price_end=price_end,
+            exact_symbols=exact_symbols,
+        )
+        LocalFileStorage(settings.storage.root_dir).save_json(
+            report,
+            filename="fmp_probe_report.json",
+            subdir="quality",
+        )
+        return report
+    client = FMPClient(
+        base_url=base_url or os.getenv("SSE_FMP_BASE_URL", "https://financialmodelingprep.com/stable"),
+        api_key=api_key,
+        timeout_seconds=timeout_seconds,
+        retries=retries,
+        retry_delay_seconds=retry_delay_seconds,
+    )
+    symbol_names = _security_master_symbol_names(settings, symbols)
+    report = FMPProbe(
+        client,
+        period=period,
+        limit=limit,
+        price_start=price_start,
+        price_end=price_end,
+        exact_symbols=exact_symbols,
+    ).run(symbols=symbols, checks=normalized_checks, symbol_names=symbol_names)
+    report["api_key_env"] = resolved_api_key_env
+    report["api_key_configured"] = bool(api_key)
+    report["base_url"] = client.base_url
+    report["period"] = period
+    report["limit"] = limit
+    report["price_start"] = price_start.isoformat() if price_start else None
+    report["price_end"] = price_end.isoformat() if price_end else None
+    report["exact_symbols"] = exact_symbols
+    LocalFileStorage(settings.storage.root_dir).save_json(
+        report,
+        filename="fmp_probe_report.json",
+        subdir="quality",
+    )
+    return cast(dict[str, object], report)
+
+
+def run_finedge_probe(
+    symbols: list[str],
+    checks: list[str],
+    config_path: str | None = None,
+    base_url: str | None = None,
+    api_key_env: str = "SSE_FINEDGE_API_KEY",
+    timeout_seconds: int = 8,
+    retries: int = 0,
+    retry_delay_seconds: float = 0.5,
+    statement_type: str = "s",
+    statement_code: str = "pl",
+    period: str = "annual",
+    ratio_type: str = "pr",
+    metrics_ratio_type: str = "gr",
+    shareholding_period: str = "quarterly",
+    from_date: str | None = None,
+    to_date: str | None = None,
+    index_symbol: str = "NIFTY 50",
+) -> dict[str, object]:
+    """Probe FinEdge coverage without writing canonical market/factor tables."""
+    settings = load_settings(config_path=config_path)
+    validate_startup_settings(settings)
+    configure_logging(settings.log_level)
+    api_key, resolved_api_key_env = _resolve_finedge_api_key(api_key_env)
+    resolved_base_url = base_url or os.getenv("SSE_FINEDGE_BASE_URL", "https://data.finedgeapi.com")
+    normalized_checks = normalize_finedge_checks(checks)
+    if not api_key:
+        report = _missing_finedge_key_report(
+            symbols=symbols,
+            checks=normalized_checks,
+            api_key_env=api_key_env,
+            base_url=resolved_base_url,
+            statement_type=statement_type,
+            statement_code=statement_code,
+            period=period,
+            ratio_type=ratio_type,
+            metrics_ratio_type=metrics_ratio_type,
+            shareholding_period=shareholding_period,
+            from_date=from_date,
+            to_date=to_date,
+            index_symbol=index_symbol,
+        )
+        LocalFileStorage(settings.storage.root_dir).save_json(
+            report,
+            filename="finedge_probe_report.json",
+            subdir="quality",
+        )
+        return report
+    client = FinEdgeClient(
+        base_url=resolved_base_url,
+        api_key=api_key,
+        timeout_seconds=timeout_seconds,
+        retries=retries,
+        retry_delay_seconds=retry_delay_seconds,
+    )
+    report = FinEdgeProbe(
+        client,
+        statement_type=statement_type,
+        statement_code=statement_code,
+        period=period,
+        ratio_type=ratio_type,
+        metrics_ratio_type=metrics_ratio_type,
+        shareholding_period=shareholding_period,
+        from_date=from_date,
+        to_date=to_date,
+        index_symbol=index_symbol,
+    ).run(symbols=symbols, checks=normalized_checks)
+    report["api_key_env"] = resolved_api_key_env
+    report["api_key_configured"] = bool(api_key)
+    report["base_url"] = client.base_url
+    report["statement_type"] = statement_type
+    report["statement_code"] = statement_code
+    report["period"] = period
+    report["ratio_type"] = ratio_type
+    report["metrics_ratio_type"] = metrics_ratio_type
+    report["shareholding_period"] = shareholding_period
+    report["from_date"] = from_date
+    report["to_date"] = to_date
+    report["index_symbol"] = index_symbol
+    LocalFileStorage(settings.storage.root_dir).save_json(
+        report,
+        filename="finedge_probe_report.json",
+        subdir="quality",
+    )
+    return cast(dict[str, object], report)
+
+
+def run_finedge_inspect(
+    symbols: list[str],
+    checks: list[str],
+    config_path: str | None = None,
+    base_url: str | None = None,
+    api_key_env: str = "SSE_FINEDGE_API_KEY",
+    timeout_seconds: int = 8,
+    retries: int = 0,
+    retry_delay_seconds: float = 0.5,
+    statement_type: str = "s",
+    statement_code: str = "pl",
+    period: str = "annual",
+    ratio_type: str = "pr",
+    metrics_ratio_type: str = "gr",
+    shareholding_period: str = "quarterly",
+    from_date: str | None = None,
+    to_date: str | None = None,
+    index_symbol: str = "NIFTY 50",
+    max_depth: int = 4,
+    max_fields: int = 80,
+    max_list_items: int = 25,
+) -> dict[str, object]:
+    """Inspect FinEdge response schemas without storing raw vendor payloads."""
+    settings = load_settings(config_path=config_path)
+    validate_startup_settings(settings)
+    configure_logging(settings.log_level)
+    api_key, resolved_api_key_env = _resolve_finedge_api_key(api_key_env)
+    resolved_base_url = base_url or os.getenv("SSE_FINEDGE_BASE_URL", "https://data.finedgeapi.com")
+    normalized_checks = normalize_finedge_checks(checks)
+    if not api_key:
+        report = _missing_finedge_key_report(
+            symbols=symbols,
+            checks=normalized_checks,
+            api_key_env=api_key_env,
+            base_url=resolved_base_url,
+            statement_type=statement_type,
+            statement_code=statement_code,
+            period=period,
+            ratio_type=ratio_type,
+            metrics_ratio_type=metrics_ratio_type,
+            shareholding_period=shareholding_period,
+            from_date=from_date,
+            to_date=to_date,
+            index_symbol=index_symbol,
+        )
+        report["pipeline"] = "finedge_schema_inspection"
+        report["schema_limits"] = {
+            "max_depth": max_depth,
+            "max_fields": max_fields,
+            "max_list_items": max_list_items,
+        }
+        LocalFileStorage(settings.storage.root_dir).save_json(
+            report,
+            filename="finedge_schema_inspection_latest.json",
+            subdir="quality",
+        )
+        return report
+    client = FinEdgeClient(
+        base_url=resolved_base_url,
+        api_key=api_key,
+        timeout_seconds=timeout_seconds,
+        retries=retries,
+        retry_delay_seconds=retry_delay_seconds,
+    )
+    report = FinEdgeSchemaInspector(
+        client,
+        statement_type=statement_type,
+        statement_code=statement_code,
+        period=period,
+        ratio_type=ratio_type,
+        metrics_ratio_type=metrics_ratio_type,
+        shareholding_period=shareholding_period,
+        from_date=from_date,
+        to_date=to_date,
+        index_symbol=index_symbol,
+        max_depth=max_depth,
+        max_fields=max_fields,
+        max_list_items=max_list_items,
+    ).run(symbols=symbols, checks=normalized_checks)
+    report["api_key_env"] = resolved_api_key_env
+    report["api_key_configured"] = bool(api_key)
+    report["base_url"] = client.base_url
+    report["statement_type"] = statement_type
+    report["statement_code"] = statement_code
+    report["period"] = period
+    report["ratio_type"] = ratio_type
+    report["metrics_ratio_type"] = metrics_ratio_type
+    report["shareholding_period"] = shareholding_period
+    report["from_date"] = from_date
+    report["to_date"] = to_date
+    report["index_symbol"] = index_symbol
+    LocalFileStorage(settings.storage.root_dir).save_json(
+        report,
+        filename="finedge_schema_inspection_latest.json",
+        subdir="quality",
+    )
+    return cast(dict[str, object], report)
+
+
+def run_finedge_factor_export(
+    symbols: list[str],
+    output_root: str,
+    as_of: date,
+    config_path: str | None = None,
+    base_url: str | None = None,
+    api_key_env: str = "SSE_FINEDGE_API_KEY",
+    timeout_seconds: int = 8,
+    retries: int = 0,
+    retry_delay_seconds: float = 0.5,
+    venue: str | None = None,
+    statement_type: str = "s",
+    period: str = "annual",
+    shareholding_period: str = "quarterly",
+    sections: list[str] | None = None,
+) -> dict[str, object]:
+    """Export FinEdge payloads into reviewable factor CSVs outside canonical storage."""
+    settings = load_settings(config_path=config_path)
+    validate_startup_settings(settings)
+    configure_logging(settings.log_level)
+    api_key, resolved_api_key_env = _resolve_finedge_api_key(api_key_env)
+    resolved_base_url = base_url or os.getenv("SSE_FINEDGE_BASE_URL", "https://data.finedgeapi.com")
+    canonical_venue = (venue or settings.runtime_data.canonical_venue).strip().upper()
+    if not api_key:
+        report = {
+            "pipeline": "finedge_factor_export",
+            "run_at": datetime.utcnow().isoformat() + "Z",
+            "as_of": as_of.isoformat(),
+            "venue": canonical_venue,
+            "source": "finedge",
+            "sections": sections or ["financials", "valuations", "shareholding"],
+            "symbols_requested": len(symbols),
+            "output_root": output_root,
+            "passed": False,
+            "row_counts": {"financials": 0, "valuations": 0, "shareholding": 0, "banking": 0, "ownership_details": 0},
+            "files": {},
+            "issues": [{"section": "auth", "message": f"Missing FinEdge API token. Set {api_key_env} or FINEDGE_API_KEY."}],
+            "api_key_env": api_key_env,
+            "api_key_configured": False,
+            "base_url": resolved_base_url,
+        }
+        return report
+    client = FinEdgeClient(
+        base_url=resolved_base_url,
+        api_key=api_key,
+        timeout_seconds=timeout_seconds,
+        retries=retries,
+        retry_delay_seconds=retry_delay_seconds,
+    )
+    mapper = FinEdgeFactorMapper(
+        client,
+        venue=canonical_venue,
+        statement_type=statement_type,
+        period=period,
+        shareholding_period=shareholding_period,
+    )
+    report = mapper.export(
+        symbols=symbols,
+        as_of=as_of,
+        output_root=output_root,
+        sections=sections or ["financials", "valuations", "shareholding"],
+    )
+    report["api_key_env"] = resolved_api_key_env
+    report["api_key_configured"] = bool(api_key)
+    report["base_url"] = client.base_url
+    return cast(dict[str, object], report)
+
+
+def _resolve_fmp_api_key(primary_env: str) -> tuple[str, str]:
+    candidates = [
+        primary_env,
+        "SSE_FMP_API_KEY",
+        "FMP_API_KEY",
+        "FINANCIALMODELINGPREP_API_KEY",
+        "FINANCIAL_MODELING_PREP_API_KEY",
+    ]
+    for name in dict.fromkeys(name for name in candidates if name):
+        value = os.getenv(name, "").strip()
+        if value:
+            return value, name
+    return "", primary_env
+
+
+def _resolve_finedge_api_key(primary_env: str) -> tuple[str, str]:
+    candidates = [
+        primary_env,
+        "SSE_FINEDGE_API_KEY",
+        "FINEDGE_API_KEY",
+    ]
+    for name in dict.fromkeys(name for name in candidates if name):
+        value = os.getenv(name, "").strip()
+        if value:
+            return value, name
+    return "", primary_env
+
+
+def _missing_finedge_key_report(
+    *,
+    symbols: Sequence[str],
+    checks: Sequence[str],
+    api_key_env: str,
+    base_url: str,
+    statement_type: str,
+    statement_code: str,
+    period: str,
+    ratio_type: str,
+    metrics_ratio_type: str,
+    shareholding_period: str,
+    from_date: str | None,
+    to_date: str | None,
+    index_symbol: str,
+) -> dict[str, object]:
+    normalized_symbols = [symbol.strip().upper() for symbol in symbols if symbol.strip()]
+    coverage = {
+        check: {
+            "ok": 0,
+            "total": 1 if check in {"stock_symbols", "results_calendar", "ipo_calendar", "index_master", "health"} else len(normalized_symbols),
+            "coverage": 0.0,
+            "sample_errors": [f"Missing FinEdge API token. Set {api_key_env} or FINEDGE_API_KEY."],
+        }
+        for check in checks
+    }
+    return {
+        "pipeline": "finedge_probe",
+        "run_at": datetime.utcnow().isoformat() + "Z",
+        "symbols_requested": len(normalized_symbols),
+        "checks": list(checks),
+        "passed": False,
+        "coverage": coverage,
+        "market_report": {"checks": {}, "ok": False},
+        "symbol_reports": [],
+        "recommendations": [
+            f"Set {api_key_env}=<your_finedge_token> in .env and source it before running finedge-probe.",
+            "FinEdge uses URL query authorization; the client appends token=<configured value> automatically.",
+        ],
+        "api_key_env": api_key_env,
+        "api_key_configured": False,
+        "base_url": base_url,
+        "statement_type": statement_type,
+        "statement_code": statement_code,
+        "period": period,
+        "ratio_type": ratio_type,
+        "metrics_ratio_type": metrics_ratio_type,
+        "shareholding_period": shareholding_period,
+        "from_date": from_date,
+        "to_date": to_date,
+        "index_symbol": index_symbol,
+    }
+
+
+def _missing_fmp_key_report(
+    *,
+    symbols: Sequence[str],
+    checks: Sequence[str],
+    api_key_env: str,
+    base_url: str,
+    period: str,
+    limit: int,
+    price_start: date | None,
+    price_end: date | None,
+    exact_symbols: bool = False,
+) -> dict[str, object]:
+    normalized_symbols = [symbol.strip().upper() for symbol in symbols if symbol.strip()]
+    coverage = {
+        check: {
+            "ok": 0,
+            "total": len(normalized_symbols),
+            "coverage": 0.0,
+            "sample_resolved_symbols": [],
+            "sample_errors": [f"Missing FMP API key. Set {api_key_env} or FMP_API_KEY."],
+        }
+        for check in checks
+    }
+    symbol_reports = [
+        {
+            "symbol": symbol,
+            "candidate_symbols": [f"{symbol}.NS", f"{symbol}.BO", symbol],
+            "checks": {
+                check: {
+                    "ok": False,
+                    "error": f"Missing FMP API key. Set {api_key_env} or FMP_API_KEY.",
+                    "summary": {},
+                }
+                for check in checks
+            },
+            "usable_sections": [],
+            "ok": False,
+        }
+        for symbol in normalized_symbols
+    ]
+    return {
+        "pipeline": "fmp_probe",
+        "run_at": datetime.utcnow().isoformat() + "Z",
+        "symbols_requested": len(normalized_symbols),
+        "checks": list(checks),
+        "passed": False,
+        "coverage": coverage,
+        "symbol_reports": symbol_reports,
+        "recommendations": [
+            f"Set {api_key_env}=<your_fmp_key> in .env and source it before running fmp-probe.",
+            "FMP uses URL query authorization; the client appends apikey=<configured value> automatically.",
+        ],
+        "api_key_env": api_key_env,
+        "api_key_configured": False,
+        "base_url": base_url,
+        "period": period,
+        "limit": limit,
+        "price_start": price_start.isoformat() if price_start else None,
+        "price_end": price_end.isoformat() if price_end else None,
+        "exact_symbols": exact_symbols,
+    }
+
+
+def _indianapi_symbol_names(settings: AppSettings, symbols: Sequence[str]) -> dict[str, str]:
+    return _security_master_symbol_names(settings, symbols)
+
+
+def _security_master_symbol_names(settings: AppSettings, symbols: Sequence[str]) -> dict[str, str]:
+    store = MarketDataStore(settings.storage.sqlite_path)
+    try:
+        records = store.get_security_master(symbols)
+    except Exception:  # noqa: BLE001 - name enrichment is best-effort diagnostics.
+        return {}
+    finally:
+        store.close()
+    return {
+        record.symbol: record.company_name
+        for record in records
+        if record.company_name and record.company_name != record.symbol
+    }
 
 
 def run_screen(config_path: str | None = None) -> dict[str, object]:
@@ -667,6 +1214,71 @@ def run_data_quality(
         )
     finally:
         pipeline.close()
+
+
+def run_data_source_coverage(
+    as_of: date,
+    start: date,
+    symbols: list[str] | None = None,
+    config_path: str | None = None,
+    interval: str = "1d",
+    universe_file: str | None = None,
+    venue: str | None = None,
+) -> dict[str, object]:
+    """Aggregate canonical and vendor-trial source coverage without live API calls."""
+    settings = load_settings(config_path=config_path)
+    validate_startup_settings(settings)
+    configure_logging(settings.log_level)
+    resolved_symbols, _ = _resolve_runtime_universe(
+        settings=settings,
+        symbols=symbols,
+        universe_file=universe_file,
+    )
+    canonical_venue = (venue or settings.runtime_data.canonical_venue).strip().upper()
+    store = MarketDataStore(settings.storage.sqlite_path)
+    file_store = LocalFileStorage(settings.storage.root_dir)
+    try:
+        reporter = DataSourceCoverageReporter(
+            store=store,
+            file_store=file_store,
+            venue=canonical_venue,
+            entitlements=settings.data_entitlements.sources,
+        )
+        return reporter.build(
+            symbols=resolved_symbols,
+            as_of=as_of,
+            start=start,
+            interval=interval,
+        )
+    finally:
+        store.close()
+
+
+def run_data_entitlements(
+    symbols: list[str] | None = None,
+    universe_file: str | None = None,
+    config_path: str | None = None,
+) -> dict[str, object]:
+    """Report configured data-source entitlements and licensing/readiness metadata."""
+    settings = load_settings(config_path=config_path)
+    validate_startup_settings(settings)
+    configure_logging(settings.log_level)
+    resolved_symbols, _ = _resolve_runtime_universe(
+        settings=settings,
+        symbols=symbols,
+        universe_file=universe_file,
+    )
+    file_store = LocalFileStorage(settings.storage.root_dir)
+    report = build_data_entitlement_report(settings.data_entitlements.sources, symbols=resolved_symbols)
+    report["markdown"] = render_data_entitlements_markdown(report)
+    quality_dir = file_store.root / "quality"
+    report["artifacts"] = {
+        "json": str(quality_dir / "data_entitlements_report.json"),
+        "markdown": str(quality_dir / "data_entitlements_report.md"),
+    }
+    file_store.save_json(report, filename="data_entitlements_report.json", subdir="quality")
+    file_store.save_text(str(report["markdown"]), filename="data_entitlements_report.md", subdir="quality")
+    return report
 
 
 def run_market_refresh(
@@ -1535,6 +2147,94 @@ def run_engine_backtest(
         pipeline.close()
 
 
+def run_conviction_calibration(
+    start: date,
+    end: date,
+    symbols: list[str] | None = None,
+    config_path: str | None = None,
+    interval: str = "1d",
+    universe_file: str | None = None,
+    universe_policy: str = "eligible_history",
+    min_history_rows: int = 1000,
+    min_lookback: int = 220,
+    horizons: list[int] | None = None,
+    score_type: str = "conviction",
+    round_trip_cost_bps: float | None = None,
+    slippage_bps: float = 5.0,
+    output_path: str | None = None,
+) -> dict[str, object]:
+    """Build the latest conviction evidence artifact from an engine backtest."""
+    settings = load_settings(config_path=config_path)
+    report = run_engine_backtest(
+        start=start,
+        end=end,
+        symbols=symbols,
+        config_path=config_path,
+        interval=interval,
+        universe_file=universe_file,
+        universe_policy=universe_policy,
+        min_history_rows=min_history_rows,
+        min_lookback=min_lookback,
+        horizons=horizons,
+        score_type=score_type,
+        round_trip_cost_bps=round_trip_cost_bps,
+        slippage_bps=slippage_bps,
+    )
+    payload = _conviction_calibration_payload(report=report)
+    target = Path(output_path or settings.scoring.calibration_auto_tune.report_path)
+    if not target.is_absolute():
+        target = Path.cwd() / target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+
+    evidence_features, evidence_diagnostics = load_backtest_evidence(target)
+    payload["artifacts"]["calibration_report_json"] = str(target)
+    payload["evidence_features"] = evidence_features
+    payload["evidence_diagnostics"] = evidence_diagnostics
+    target.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    return payload
+
+
+def _conviction_calibration_payload(report: dict[str, object]) -> dict[str, object]:
+    evaluation = _mapping(report.get("evaluation"))
+    artifacts = _mapping(report.get("artifacts"))
+    calibration_report = {
+        "quantile_ic": _mapping(evaluation.get("quantile_ic")),
+        "turnover_top_quantile": _mapping(evaluation.get("turnover_top_quantile")),
+        "decay": _mapping(evaluation.get("decay")),
+    }
+    payload: dict[str, object] = {
+        "pipeline": "conviction_calibration",
+        "source_pipeline": report.get("pipeline"),
+        "start": report.get("start"),
+        "end": report.get("end"),
+        "interval": report.get("interval"),
+        "horizons": report.get("horizons", []),
+        "score_type": report.get("score_type", "conviction"),
+        "passed": bool(report.get("score_rows")) and bool(report.get("label_rows")),
+        "rows_evaluated": _mapping(evaluation).get("rows_evaluated", 0),
+        "score_rows": report.get("score_rows", 0),
+        "label_rows": report.get("label_rows", 0),
+        "universe": report.get("universe", {}),
+        "factor_coverage": report.get("factor_coverage", {}),
+        "label_summary": report.get("label_summary", {}),
+        "report": calibration_report,
+        "net_quantile_ic": _mapping(evaluation.get("net_quantile_ic")),
+        "gross_horizon_metrics": _mapping(evaluation.get("gross_horizon_metrics")),
+        "net_horizon_metrics": _mapping(evaluation.get("net_horizon_metrics")),
+        "sector_neutral_ic": _mapping(evaluation.get("sector_neutral_ic")),
+        "sector_neutral_ic_net": _mapping(evaluation.get("sector_neutral_ic_net")),
+        "cost_model": _mapping(evaluation.get("cost_model")),
+        "artifacts": {
+            "source_engine_report_json": artifacts.get("report_json"),
+            "source_scores_csv": artifacts.get("scores_csv"),
+            "source_labels_csv": artifacts.get("labels_csv"),
+        },
+        "lineage": report.get("lineage", {}),
+    }
+    return payload
+
+
 def run_security_master_ingest(
     file_path: str,
     config_path: str | None = None,
@@ -1841,6 +2541,7 @@ def run_factor_ingest(
     config_path: str | None = None,
     venue: str | None = None,
     min_coverage: float = 1.0,
+    sections: list[str] | None = None,
 ) -> dict[str, object]:
     """Bulk ingest external point-in-time financial, valuation, and ownership factors."""
     settings = load_settings(config_path=config_path)
@@ -1859,9 +2560,36 @@ def run_factor_ingest(
             as_of=as_of,
             venue=venue,
             min_coverage=min_coverage,
+            sections=sections,
         )
     finally:
         pipeline.close()
+
+
+def run_factor_qa(
+    as_of: date,
+    symbols: list[str] | None = None,
+    universe_file: str | None = None,
+    config_path: str | None = None,
+    venue: str | None = None,
+    statement_type: str | None = None,
+) -> dict[str, object]:
+    """Report point-in-time canonical factor coverage, values, and warnings."""
+    settings = load_settings(config_path=config_path)
+    validate_startup_settings(settings)
+    configure_logging(settings.log_level)
+    resolved_symbols, _ = _resolve_runtime_universe(
+        settings=settings,
+        symbols=symbols,
+        universe_file=universe_file,
+    )
+    canonical_venue = (venue or settings.runtime_data.canonical_venue).strip().upper()
+    store = MarketDataStore(settings.storage.sqlite_path)
+    try:
+        reporter = CanonicalFactorQAReporter(store=store, venue=canonical_venue)
+        return reporter.build(symbols=resolved_symbols, as_of=as_of, statement_type=statement_type)
+    finally:
+        store.close()
 
 
 def _build_market_provider(settings: AppSettings):

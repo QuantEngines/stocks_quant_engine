@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from datetime import date
 from typing import Sequence
 
+import pytest
+
 from stock_screener_engine.config.settings import load_settings
 from stock_screener_engine.core.engine import ResearchEngine
-from stock_screener_engine.core.entities import StockSnapshot
+from stock_screener_engine.core.entities import FundamentalsSnapshot, GovernanceSnapshot, StockSnapshot
 from stock_screener_engine.data_sources.base.interfaces import MarketDataProvider
 from stock_screener_engine.data_sources.financials.sqlite_financials_provider import SQLiteFinancialsProvider
 from stock_screener_engine.data_sources.market.sqlite_market_data_provider import SQLiteMarketDataProvider
 from stock_screener_engine.data_sources.market.mock_market_data import MockIndianMarketDataProvider
 from stock_screener_engine.data_sources.schemas import (
+    BankingFactorRecord,
     EquityValuationRecord,
     FinancialStatementRecord,
     OHLCVBar,
@@ -36,6 +41,8 @@ def test_research_engine_outputs() -> None:
     assert output["swing_signals"]
     assert "long_portfolio_positions" in output
     assert "swing_portfolio_positions" in output
+    assert "conviction_evidence" in output
+    assert "source_confidence" in output["features"][0].values
 
 
 class _MarketOnlyProvider(MarketDataProvider):
@@ -279,6 +286,162 @@ def test_research_engine_uses_canonical_financial_statements(tmp_path) -> None:
     assert fv.values["sector_pe_zscore"] > 0.0
     assert fv.values["sector_pb_zscore"] > 0.0
     assert fv.values["governance_proxy"] > 0.0
+
+
+class _BankMarketProvider(_MarketOnlyProvider):
+    def get_universe(self) -> list[str]:
+        return ["BANK"]
+
+    def get_snapshots(self, symbols: Sequence[str]) -> list[StockSnapshot]:
+        return [
+            StockSnapshot(
+                symbol="BANK",
+                as_of=date(2026, 5, 28),
+                sector="Financial Services",
+                close=100.0,
+                volume=2_000_000.0,
+                delivery_ratio=0.4,
+                pe_ratio=0.0,
+                roe=0.0,
+                debt_to_equity=0.0,
+                earnings_growth=0.0,
+                free_cash_flow_margin=0.0,
+                promoter_holding_change=0.0,
+                insider_activity_score=0.0,
+            )
+        ]
+
+
+class _BankFinancialsProvider:
+    def get_fundamentals(self, symbols: Sequence[str]) -> dict[str, FundamentalsSnapshot]:
+        return self.get_fundamentals_as_of(symbols, as_of=date(2026, 5, 28))
+
+    def get_fundamentals_as_of(self, symbols: Sequence[str], as_of: date) -> dict[str, FundamentalsSnapshot]:
+        return {
+            "BANK": FundamentalsSnapshot(
+                symbol="BANK",
+                as_of=date(2026, 3, 31),
+                pe_ratio=15.0,
+                pb_ratio=2.0,
+                roe=0.14,
+                roa=0.017,
+                debt_to_equity=0.8,
+                earnings_growth_yoy=0.12,
+                revenue_growth_yoy=0.10,
+                free_cash_flow_margin=0.18,
+                operating_margin=0.22,
+                net_profit_margin=0.16,
+            )
+        }
+
+    def get_governance(self, symbols: Sequence[str]) -> dict[str, GovernanceSnapshot]:
+        return self.get_governance_as_of(symbols, as_of=date(2026, 5, 28))
+
+    def get_governance_as_of(self, symbols: Sequence[str], as_of: date) -> dict[str, GovernanceSnapshot]:
+        return {
+            "BANK": GovernanceSnapshot(
+                symbol="BANK",
+                as_of=date(2026, 3, 31),
+                promoter_holding_pct=0.0,
+                institutional_holding_pct=80.0,
+                fii_holding_pct=45.0,
+                dii_holding_pct=35.0,
+                insider_activity_score=0.3,
+                audit_opinion="clean",
+            )
+        }
+
+    def get_banking_factors_as_of(self, symbols: Sequence[str], as_of: date) -> dict[str, BankingFactorRecord]:
+        return {
+            "BANK": BankingFactorRecord(
+                venue="NSE",
+                symbol="BANK",
+                period_end=date(2026, 3, 31),
+                filing_date=date(2026, 4, 20),
+                net_interest_income=1000.0,
+                net_interest_margin_pct=3.2,
+                advances_growth_pct=12.0,
+                deposits_growth_pct=14.0,
+                casa_ratio_pct=0.0,
+                gnpa_ratio_pct=1.2,
+                nnpa_ratio_pct=0.4,
+                provision_coverage_ratio_pct=0.0,
+                credit_cost_pct=0.0,
+                capital_adequacy_ratio_pct=0.0,
+                cet1_ratio_pct=19.7,
+                cost_to_income_ratio_pct=68.0,
+                roa_pct=1.7,
+                roe_pct=13.4,
+                loan_to_deposit_ratio_pct=95.0,
+            )
+        }
+
+
+def test_research_engine_enriches_financial_services_with_banking_factors() -> None:
+    settings = load_settings()
+    output = ResearchEngine(
+        settings=settings,
+        market_data=_BankMarketProvider(),
+        text_data=MockTextEventProvider(),
+        financials=_BankFinancialsProvider(),
+    ).run(symbols=["BANK"], regime_score=0.0)
+
+    fv = output["features"][0]
+    score = output["scores"][0]
+    assert fv.values["banking_sector_applicable"] == 1.0
+    assert fv.values["banking_factor_available"] == 1.0
+    assert fv.values["banking_metric_coverage"] > 0.70
+    assert fv.values["bank_nim_pct"] == 3.2
+    assert fv.values["bank_gnpa_pct"] == 1.2
+    assert fv.values["bank_cet1_pct"] == 19.7
+    assert fv.values["banking_data_confidence"] == fv.values["banking_metric_coverage"]
+    assert score.component_scores["conviction_source_confidence"] > 50.0
+
+
+def test_research_engine_injects_calibration_evidence_into_conviction(tmp_path) -> None:
+    calibration_path = tmp_path / "calibration_report_latest.json"
+    calibration_path.write_text(
+        json.dumps(
+            {
+                "net_quantile_ic": {"5": 0.08, "20": 0.04},
+                "net_horizon_metrics": {
+                    "5": {"top_quantile_hit_rate": 0.62, "avg_quantile_spread": 0.012},
+                    "20": {"top_quantile_hit_rate": 0.68, "avg_quantile_spread": 0.018},
+                },
+                "report": {
+                    "quantile_ic": {"5": 0.05, "20": 0.03},
+                    "decay": {"5": 0.04, "20": 0.02},
+                    "turnover_top_quantile": {"5": 0.2, "20": 0.3},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    settings = load_settings()
+    settings = replace(
+        settings,
+        scoring=replace(
+            settings.scoring,
+            calibration_auto_tune=replace(
+                settings.scoring.calibration_auto_tune,
+                report_path=str(calibration_path),
+            ),
+        ),
+    )
+
+    output = ResearchEngine(
+        settings=settings,
+        market_data=MockIndianMarketDataProvider(),
+        text_data=MockTextEventProvider(),
+    ).run(regime_score=0.0)
+
+    fv = output["features"][0]
+    score = output["scores"][0]
+    assert output["conviction_evidence"]["backtest_evidence_loaded"] is True
+    assert fv.values["backtest_information_coefficient"] == pytest.approx(0.06)
+    assert fv.values["backtest_hit_rate"] == pytest.approx(0.65)
+    assert 0.0 <= fv.values["source_confidence"] <= 1.0
+    assert score.component_scores["conviction_backtest_evidence"] > 50.0
 
 
 def _engine_annual_statement(symbol: str, net_income: float, equity: float) -> FinancialStatementRecord:

@@ -12,6 +12,8 @@ from stock_screener_engine.backtest.costs import IndianEquityCostModel
 from stock_screener_engine.core.entities import MarketSnapshot
 from stock_screener_engine.core.features import FeatureEngine
 from stock_screener_engine.core.scoring import LongTermScorer, RiskPenaltyScorer, SwingScorer, build_score_card
+from stock_screener_engine.core.scoring_conviction import ConvictionScorer
+from stock_screener_engine.data_sources.financials.sqlite_financials_provider import SQLiteFinancialsProvider
 from stock_screener_engine.data_sources.schemas import OHLCVBar
 from stock_screener_engine.storage.market_data_store import MarketDataStore
 
@@ -314,6 +316,7 @@ class EngineScoreDatasetBuilder:
         long_term_scorer: LongTermScorer | None = None,
         swing_scorer: SwingScorer | None = None,
         risk_scorer: RiskPenaltyScorer | None = None,
+        conviction_scorer: ConvictionScorer | None = None,
     ) -> None:
         self.store = store
         self.venue = venue
@@ -323,6 +326,8 @@ class EngineScoreDatasetBuilder:
         self.long_term_scorer = long_term_scorer or LongTermScorer()
         self.swing_scorer = swing_scorer or SwingScorer()
         self.risk_scorer = risk_scorer or RiskPenaltyScorer()
+        self.conviction_scorer = conviction_scorer or ConvictionScorer(max_risk_penalty=self.risk_scorer.max_penalty)
+        self.financials = SQLiteFinancialsProvider(sqlite_path="", venue=self.venue, store=self.store)
 
     def build_scores(
         self,
@@ -394,6 +399,8 @@ class EngineScoreDatasetBuilder:
         for idx in range(self.min_lookback - 1, last_score_index + 1):
             bar = bars[idx]
             as_of = date.fromisoformat(bar.ts)
+            fundamentals = self.financials.get_fundamentals_as_of([symbol], as_of=as_of).get(symbol)
+            governance = self.financials.get_governance_as_of([symbol], as_of=as_of).get(symbol)
             market = MarketSnapshot(
                 symbol=symbol,
                 as_of=as_of,
@@ -409,8 +416,8 @@ class EngineScoreDatasetBuilder:
             )
             fv = self.feature_engine.compute(
                 market=market,
-                fundamentals=None,
-                governance=None,
+                fundamentals=fundamentals,
+                governance=governance,
                 historical_bars=bar_dicts[: idx + 1],
                 index_bars=None,
                 sentiment_score=0.0,
@@ -425,6 +432,7 @@ class EngineScoreDatasetBuilder:
                 long_term_scorer=self.long_term_scorer,
                 swing_scorer=self.swing_scorer,
                 risk_scorer=self.risk_scorer,
+                conviction_scorer=self.conviction_scorer,
             )
             score = {
                 "swing": score_card.swing_score,

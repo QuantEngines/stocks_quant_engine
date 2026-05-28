@@ -9,6 +9,7 @@ from typing import Sequence
 from stock_screener_engine.core.entities import FundamentalsSnapshot, GovernanceSnapshot
 from stock_screener_engine.data_sources.base.interfaces import FinancialsProvider
 from stock_screener_engine.data_sources.schemas import (
+    BankingFactorRecord,
     EquityValuationRecord,
     FinancialStatementRecord,
     ShareholdingRecord,
@@ -103,6 +104,18 @@ class SQLiteFinancialsProvider(FinancialsProvider):
             out[symbol] = _governance_from_shareholding(records[0], records[1] if len(records) > 1 else None)
         return out
 
+    def get_banking_factors_as_of(
+        self,
+        symbols: Sequence[str],
+        as_of: date,
+    ) -> dict[str, BankingFactorRecord]:
+        out: dict[str, BankingFactorRecord] = {}
+        for symbol in _normalise_symbols(symbols):
+            record = self.store.latest_banking_factor_as_of(symbol=symbol, as_of=as_of, venue=self.venue)
+            if record is not None:
+                out[symbol] = record
+        return out
+
     def coverage_report(self, symbols: Sequence[str], as_of: date) -> dict[str, object]:
         statement_coverage = self.store.financial_statement_coverage(
             symbols=symbols,
@@ -119,10 +132,16 @@ class SQLiteFinancialsProvider(FinancialsProvider):
             as_of=as_of,
             venue=self.venue,
         )
+        banking_coverage = self.store.banking_factor_coverage(
+            symbols=symbols,
+            as_of=as_of,
+            venue=self.venue,
+        )
         return {
             "financial_statements": statement_coverage,
             "equity_valuations": valuation_coverage,
             "shareholding": shareholding_coverage,
+            "banking_factors": banking_coverage,
         }
 
     def close(self) -> None:

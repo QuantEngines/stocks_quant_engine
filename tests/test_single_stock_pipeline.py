@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from stock_screener_engine.config.settings import load_settings
+from stock_screener_engine.core.entities import FundamentalsSnapshot, GovernanceSnapshot
 from stock_screener_engine.data_sources.market.mock_market_data import MockIndianMarketDataProvider
 from stock_screener_engine.data_sources.text.mock_text_adapter import MockTextEventProvider
+from stock_screener_engine.pipelines import single_stock_deep
 from stock_screener_engine.pipelines.single_stock_deep import (
     SingleStockPipeline,
     _rsi,
@@ -181,3 +183,56 @@ def test_single_stock_pipeline_symbol_normalised_to_uppercase() -> None:
     )
     report = pipeline.run("reliance")
     assert report["symbol"] == "RELIANCE"
+
+
+def test_single_stock_pipeline_prefers_canonical_fundamentals_over_yfinance(monkeypatch) -> None:
+    class CanonicalFinancials:
+        def get_fundamentals(self, symbols):
+            return self.get_fundamentals_as_of(symbols, as_of=date.today())
+
+        def get_fundamentals_as_of(self, symbols, as_of):
+            return {
+                "RELIANCE": FundamentalsSnapshot(
+                    symbol="RELIANCE",
+                    as_of=as_of,
+                    pe_ratio=41.7229,
+                    pb_ratio=3.2312,
+                    roe=0.0774,
+                    debt_to_equity=0.4086,
+                    earnings_growth_yoy=-0.126,
+                    revenue_growth_yoy=0.0,
+                    free_cash_flow_margin=0.0857,
+                    operating_margin=0.1032,
+                    net_profit_margin=0.0837,
+                )
+            }
+
+        def get_governance(self, symbols):
+            return {"RELIANCE": GovernanceSnapshot(symbol="RELIANCE", as_of=date.today())}
+
+    monkeypatch.setattr(
+        single_stock_deep,
+        "_fetch_yf_info",
+        lambda symbol: {
+            "company_name": "Reliance Industries Limited",
+            "sector": "Energy",
+            "industry": "Oil & Gas",
+            "pe_ratio": 22.65,
+            "pb_ratio": 2.02,
+            "roe": 0.0914,
+            "debt_to_equity": 0.36,
+        },
+    )
+    pipeline = SingleStockPipeline(
+        settings=load_settings(),
+        market_data=MockIndianMarketDataProvider(),
+        text_data=MockTextEventProvider(),
+        financials=CanonicalFinancials(),
+    )
+
+    report = pipeline.run("RELIANCE")
+
+    assert report["fundamentals"]["source"] == "canonical"
+    assert report["fundamentals"]["pe_ratio"] == 41.7229
+    assert report["fundamentals"]["pb_ratio"] == 3.2312
+    assert report["fundamentals"]["roe_pct"] == 7.74

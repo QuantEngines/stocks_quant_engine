@@ -66,6 +66,26 @@ class FundamentalMetrics:
 
 
 @dataclass(frozen=True)
+class BankingMetrics:
+    applicable: bool = False
+    available: bool = False
+    metric_coverage: float | None = None
+    banking_quality_score: float | None = None
+    asset_quality_score: float | None = None
+    capital_strength_score: float | None = None
+    franchise_strength_score: float | None = None
+    profitability_score: float | None = None
+    efficiency_score: float | None = None
+    nim_pct: float | None = None
+    gnpa_pct: float | None = None
+    nnpa_pct: float | None = None
+    casa_pct: float | None = None
+    cet1_pct: float | None = None
+    car_pct: float | None = None
+    loan_to_deposit_pct: float | None = None
+
+
+@dataclass(frozen=True)
 class ValuationMetrics:
     pe_vs_own_history: float | None = None
     pe_vs_sector: float | None = None
@@ -102,6 +122,19 @@ class RiskMetrics:
 
 
 @dataclass(frozen=True)
+class ConvictionMetrics:
+    score_strength: float | None = None
+    signal_agreement: float | None = None
+    data_completeness: float | None = None
+    source_confidence: float | None = None
+    backtest_evidence: float | None = None
+    sector_regime_confirmation: float | None = None
+    risk_resilience: float | None = None
+    support_score: float | None = None
+    support_multiplier: float | None = None
+
+
+@dataclass(frozen=True)
 class PeerContextMetrics:
     sector_pe_zscore: float | None = None
     sector_pb_zscore: float | None = None
@@ -127,9 +160,11 @@ class ProfessionalSignalReport:
     summary: SignalSummary
     technical: TechnicalMetrics
     fundamentals: FundamentalMetrics
+    banking: BankingMetrics
     valuation: ValuationMetrics
     event_nlp: EventNlpMetrics
     risk: RiskMetrics
+    conviction: ConvictionMetrics
     peer_context: PeerContextMetrics
     explanation: SignalExplanationBlock
     as_of: date
@@ -233,6 +268,7 @@ def build_signal_report(
             cfo_pat=_get(values, "cfo_pat_ratio"),
             free_cash_flow_conversion=_get(values, "cash_flow_quality"),
         ),
+        banking=_banking_metrics(values),
         valuation=ValuationMetrics(
             pe_vs_own_history=_get(values, "rolling_pe_zscore"),
             pe_vs_sector=_get(values, "sector_pe_zscore"),
@@ -261,6 +297,17 @@ def build_signal_report(
             event_governance_risk=_event_governance_risk(components),
             missing_data_risk=round(min(1.0, len(missing) / 5.0), 3),
         ),
+        conviction=ConvictionMetrics(
+            score_strength=_component(components, "conviction_score_strength"),
+            signal_agreement=_component(components, "conviction_signal_agreement"),
+            data_completeness=_component(components, "conviction_data_completeness"),
+            source_confidence=_component(components, "conviction_source_confidence"),
+            backtest_evidence=_component(components, "conviction_backtest_evidence"),
+            sector_regime_confirmation=_component(components, "conviction_sector_regime_confirmation"),
+            risk_resilience=_component(components, "conviction_risk_resilience"),
+            support_score=_component(components, "conviction_support_score"),
+            support_multiplier=_component(components, "conviction_support_multiplier"),
+        ),
         peer_context=PeerContextMetrics(
             sector_pe_zscore=_get(values, "sector_pe_zscore"),
             sector_pb_zscore=_get(values, "sector_pb_zscore"),
@@ -284,6 +331,8 @@ def build_signal_report(
 def render_signal_markdown(report: ProfessionalSignalReport) -> str:
     ident = report.identity
     summary = report.summary
+    conviction = report.conviction
+    banking = report.banking
     peer_context = report.peer_context
     explanation = report.explanation
     lines = [
@@ -294,22 +343,39 @@ def render_signal_markdown(report: ProfessionalSignalReport) -> str:
         f"Final Score: {summary.final_score} | Long: {summary.long_term_score} | Swing: {summary.swing_score} | Risk: {summary.risk_penalty}",
         f"Confidence: {summary.confidence} | Horizon: {summary.horizon}",
         "",
-        "## Drivers",
-        *[f"- {item}" for item in explanation.top_positive_drivers],
+        "## Conviction",
+        f"Score strength: {conviction.score_strength} | Agreement: {conviction.signal_agreement} | Data: {conviction.data_completeness}",
+        f"Source: {conviction.source_confidence} | Backtest: {conviction.backtest_evidence} | Risk resilience: {conviction.risk_resilience}",
         "",
-        "## Risks",
-        *[f"- {item}" for item in explanation.top_negative_drivers],
-        "",
-        "## Peer Context",
-        f"Valuation position: {peer_context.valuation_position}",
-        str(peer_context.valuation_note),
-        "",
-        "## Thesis",
-        str(explanation.why_selected),
-        "",
-        "## Invalidation",
-        str(explanation.invalidation_logic),
     ]
+    if banking.applicable:
+        lines.extend(
+            [
+                "## Banking",
+                f"Available: {banking.available} | Coverage: {banking.metric_coverage} | Quality: {banking.banking_quality_score}",
+                f"NIM: {banking.nim_pct} | GNPA: {banking.gnpa_pct} | NNPA: {banking.nnpa_pct} | CET1: {banking.cet1_pct}",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "## Drivers",
+            *[f"- {item}" for item in explanation.top_positive_drivers],
+            "",
+            "## Risks",
+            *[f"- {item}" for item in explanation.top_negative_drivers],
+            "",
+            "## Peer Context",
+            f"Valuation position: {peer_context.valuation_position}",
+            str(peer_context.valuation_note),
+            "",
+            "## Thesis",
+            str(explanation.why_selected),
+            "",
+            "## Invalidation",
+            str(explanation.invalidation_logic),
+        ]
+    )
     warnings = explanation.missing_data_warnings
     if warnings:
         lines.extend(["", "## Missing Data", *[f"- {item}" for item in warnings]])
@@ -330,6 +396,8 @@ def signal_reports_to_console_rows(reports: Iterable[ProfessionalSignalReport]) 
                 "risk": report.summary.risk_penalty,
                 "confidence": report.summary.confidence,
                 "liquidity": report.identity.liquidity_classification,
+                "banking_coverage": report.banking.metric_coverage,
+                "banking_quality": report.banking.banking_quality_score,
             }
         )
     return rows
@@ -452,6 +520,37 @@ def _event_governance_risk(components: Mapping[str, float]) -> float | None:
     return round(sum(vals), 4)
 
 
+def _banking_metrics(values: Mapping[str, float]) -> BankingMetrics:
+    applicable = float(values.get("banking_sector_applicable", 0.0)) >= 0.5
+    if not applicable:
+        return BankingMetrics(applicable=False)
+    available = float(values.get("banking_factor_available", 0.0)) >= 0.5
+    return BankingMetrics(
+        applicable=True,
+        available=available,
+        metric_coverage=_display_score(values.get("banking_metric_coverage")),
+        banking_quality_score=_display_score(values.get("banking_quality_score")),
+        asset_quality_score=_display_score(values.get("bank_asset_quality_score")),
+        capital_strength_score=_display_score(values.get("bank_capital_strength_score")),
+        franchise_strength_score=_display_score(values.get("bank_franchise_strength_score")),
+        profitability_score=_display_score(values.get("bank_profitability_score")),
+        efficiency_score=_display_score(values.get("bank_efficiency_score")),
+        nim_pct=_get(values, "bank_nim_pct"),
+        gnpa_pct=_get(values, "bank_gnpa_pct"),
+        nnpa_pct=_get(values, "bank_nnpa_pct"),
+        casa_pct=_get(values, "bank_casa_pct"),
+        cet1_pct=_get(values, "bank_cet1_pct"),
+        car_pct=_get(values, "bank_capital_adequacy_pct"),
+        loan_to_deposit_pct=_get(values, "bank_loan_to_deposit_pct"),
+    )
+
+
+def _display_score(value: object) -> float | None:
+    if value is None:
+        return None
+    return round(float(value) * 100.0, 2)
+
+
 def _missing_data_warnings(values: Mapping[str, float]) -> list[str]:
     warnings: list[str] = []
     fundamental_keys = [
@@ -473,6 +572,11 @@ def _missing_data_warnings(values: Mapping[str, float]) -> list[str]:
         warnings.append("Document/NLP event metrics unavailable or all-zero.")
     if "trend_strength" not in values or "momentum_strength" not in values:
         warnings.append("Technical feature coverage incomplete.")
+    if float(values.get("banking_sector_applicable", 0.0)) >= 0.5:
+        if float(values.get("banking_factor_available", 0.0)) < 0.5:
+            warnings.append("Bank/NBFC-specific factors unavailable; confidence is discounted.")
+        elif float(values.get("banking_metric_coverage", 0.0)) < 0.5:
+            warnings.append("Bank/NBFC-specific factor coverage is sparse; review vendor mapping.")
     return warnings
 
 
@@ -514,4 +618,6 @@ def _monitorables(values: Mapping[str, float], risk_flags: Iterable[str]) -> lis
         monitor.append("Uncertainty in management commentary and filings")
     if "leverage_risk" in set(risk_flags):
         monitor.append("Debt reduction, refinancing cost, and interest coverage")
+    if float(values.get("banking_sector_applicable", 0.0)) >= 0.5:
+        monitor.append("Bank asset quality, deposit franchise, CET1/CAR, and NIM trend")
     return monitor

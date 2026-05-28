@@ -28,6 +28,7 @@ from stock_screener_engine.core.scoring import (
     SwingScorer,
     SwingWeights,
 )
+from stock_screener_engine.core.scoring_conviction import ConvictionScorer, ConvictionWeights
 from stock_screener_engine.core.scoring_risk import RiskPenaltyWeights
 from stock_screener_engine.storage.local_files import LocalFileStorage
 from stock_screener_engine.storage.market_data_store import MarketDataStore
@@ -170,6 +171,12 @@ class BacktestDatasetPipeline:
             sector_by_symbol=sector_by_symbol,
             cost_model=cost_model,
         )
+        factor_coverage = _factor_coverage(
+            self.store,
+            symbols=selection.selected_symbols,
+            as_of=end,
+            venue=self.settings.runtime_data.canonical_venue,
+        )
         label_rows = [label.to_dict() for label in labels]
         score_rows = [score.to_flat_dict() for score in scores]
         labels_path = self.file_store.save_rows_csv(
@@ -192,6 +199,7 @@ class BacktestDatasetPipeline:
             "label_summary": summarize_forward_labels(labels),
             "score_rows": len(scores),
             "label_rows": len(labels),
+            "factor_coverage": factor_coverage,
             "evaluation": evaluation,
             "artifacts": {
                 "labels_csv": str(labels_path),
@@ -263,6 +271,7 @@ class BacktestDatasetPipeline:
             long_term_scorer=_long_term_scorer(self.settings),
             swing_scorer=_swing_scorer(self.settings),
             risk_scorer=_risk_scorer(self.settings),
+            conviction_scorer=_conviction_scorer(self.settings),
         )
         scores = builder.build_scores(
             symbols=selection.selected_symbols,
@@ -277,6 +286,12 @@ class BacktestDatasetPipeline:
             labels=labels,
             horizons=horizons,
             cost_model=cost_model,
+        )
+        factor_coverage = _factor_coverage(
+            self.store,
+            symbols=selection.selected_symbols,
+            as_of=end,
+            venue=self.settings.runtime_data.canonical_venue,
         )
         label_rows = [label.to_dict() for label in labels]
         score_rows = [score.to_flat_dict() for score in scores]
@@ -301,6 +316,7 @@ class BacktestDatasetPipeline:
             "label_summary": summarize_forward_labels(labels),
             "score_rows": len(scores),
             "label_rows": len(labels),
+            "factor_coverage": factor_coverage,
             "evaluation": evaluation,
             "artifacts": {
                 "labels_csv": str(labels_path),
@@ -419,6 +435,34 @@ def _risk_scorer(settings: AppSettings) -> RiskPenaltyScorer:
             event_uncertainty_risk=w.event_uncertainty_risk,
             governance_risk=w.governance_risk,
             text_uncertainty_risk=w.text_uncertainty_risk,
+        ),
+    )
+
+
+def _factor_coverage(
+    store: MarketDataStore,
+    symbols: Sequence[str],
+    as_of: date,
+    venue: str,
+) -> dict[str, object]:
+    return {
+        "financial_statements": store.financial_statement_coverage(symbols=symbols, as_of=as_of, venue=venue),
+        "equity_valuations": store.equity_valuation_coverage(symbols=symbols, as_of=as_of, venue=venue),
+        "shareholding": store.shareholding_coverage(symbols=symbols, as_of=as_of, venue=venue),
+    }
+
+
+def _conviction_scorer(settings: AppSettings) -> ConvictionScorer:
+    w = settings.scoring.conviction_weights
+    return ConvictionScorer(
+        max_risk_penalty=settings.scoring.max_risk_penalty,
+        weights=ConvictionWeights(
+            signal_agreement=w.signal_agreement,
+            data_completeness=w.data_completeness,
+            source_confidence=w.source_confidence,
+            backtest_evidence=w.backtest_evidence,
+            sector_regime_confirmation=w.sector_regime_confirmation,
+            risk_resilience=w.risk_resilience,
         ),
     )
 

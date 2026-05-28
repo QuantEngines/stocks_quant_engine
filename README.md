@@ -68,10 +68,29 @@ scoring:
     earnings_instability_risk: 0.15
     event_uncertainty_risk: 0.15
     governance_risk: 0.10
+  conviction_weights:
+    signal_agreement: 0.20
+    data_completeness: 0.20
+    source_confidence: 0.10
+    backtest_evidence: 0.10
+    sector_regime_confirmation: 0.15
+    risk_resilience: 0.25
   ranking:
     top_k_long_term: 25
     top_k_swing: 25
 ```
+
+Conviction is now an auditable cross-horizon support score. The base strength is
+the average of risk-adjusted long-term and swing scores; it is then discounted by
+signal agreement, data completeness, source confidence, backtest evidence,
+sector/regime confirmation, and residual risk resilience. The report payload
+includes the full `conviction_*` breakdown.
+
+At runtime the engine injects source-confidence features from snapshot, feature,
+freshness, and reconciliation quality checks. If a calibration/backtest artifact
+exists at `scoring.calibration_auto_tune.report_path`, the same run also injects
+global backtest evidence such as IC, top-quantile hit rate, and calibration
+support into conviction scoring.
 
 ### Signal Explainability (`core/explainability.py`)
 - Every `SignalResult` carries a `SignalExplanation` with:
@@ -311,6 +330,14 @@ All settings are overridable with environment variables:
 | `SSE_CANONICAL_ADJUSTED_HISTORY` | `true` | Use split/bonus-adjusted stored bars for historical features |
 | `SSE_CANONICAL_STRICT_FRESHNESS` | `false` | Block scans when canonical bars are stale instead of warning |
 | `SSE_CANONICAL_MAX_STALENESS_DAYS` | `3` | Maximum allowed canonical bar staleness in strict mode |
+| `SSE_CALIBRATION_REPORT_PATH` | `$SSE_STORAGE_ROOT/calibration/calibration_report_latest.json` | Latest conviction/backtest evidence artifact |
+| `SSE_INDIANAPI_API_KEY` | empty | Optional IndianAPI key used by `indianapi-probe` |
+| `SSE_INDIANAPI_STOCK_BASE_URL` | `https://stock.indianapi.in` | IndianAPI stock/company endpoint base URL |
+| `SSE_INDIANAPI_ANALYST_BASE_URL` | `https://analyst.indianapi.in` | IndianAPI analyst endpoint base URL |
+| `SSE_FMP_API_KEY` | empty | Optional Financial Modeling Prep key used by `fmp-probe`; sent as the `apikey` query parameter |
+| `SSE_FMP_BASE_URL` | `https://financialmodelingprep.com/stable` | FMP stable API base URL |
+| `SSE_FINEDGE_API_KEY` | empty | Optional FinEdge key used by `finedge-probe` / `finedge-inspect`; sent as the `token` query parameter |
+| `SSE_FINEDGE_BASE_URL` | `https://data.finedgeapi.com` | FinEdge API base URL |
 | `SSE_LLM_PROVIDER` | `heuristic` | LLM backend (`heuristic`, `openai`, `anthropic`) |
 | `SSE_LLM_API_KEY_ENV` | `OPENAI_API_KEY` | Env var name that stores LLM API key |
 | `SSE_LLM_AUDIT_PATH` | `./data` | Root path for low-confidence LLM audit logs |
@@ -508,12 +535,27 @@ stock-engine security-master-ingest --file securities.csv
 stock-engine data-foundation --start 2026-01-01 --end 2026-01-31 --symbols RELIANCE,TCS
 stock-engine data-foundation --source yfinance --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv"
 stock-engine data-quality --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv"
+stock-engine data-entitlements --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --format markdown
+stock-engine data-source-coverage --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --format markdown
 stock-engine refresh-market --source zerodha --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --lookback-days 10 --batch-size 25 --retries 2 --run-scan
 stock-engine broker-health --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --sources zerodha,icici_breeze --lookback-days 10 --retries 2 --primary-source zerodha --lagged-sources icici_breeze --format table
+stock-engine indianapi-probe --symbols RELIANCE,TCS,INFY,HDFCBANK,ICICIBANK --check stock,financials,shareholding,analyst,forecasts,history --format table
+stock-engine fmp-probe --symbols RELIANCE --check smoke --format table
+stock-engine fmp-probe --symbols AAPL --check smoke,income_statement --limit 1 --exact-symbols --format table
+stock-engine fmp-probe --symbols RELIANCE,TCS,INFY,HDFCBANK,ICICIBANK --check all --timeout-seconds 5 --retries 0 --format table
+stock-engine finedge-probe --symbols ITC,RELIANCE,HDFCBANK --check smoke --format table
+stock-engine finedge-probe --symbols ITC,RELIANCE,HDFCBANK --check fundamentals --statement-type s --statement-code pl --period annual --format table
+stock-engine finedge-inspect --symbols ITC,RELIANCE,HDFCBANK --check fundamentals --statement-type s --statement-code pl --period annual --format table
+stock-engine finedge-inspect --symbols ITC,RELIANCE,HDFCBANK --check ownership --shareholding-period quarterly --format table
+stock-engine finedge-factor-export --symbols ITC,RELIANCE,HDFCBANK --as-of 2026-05-28 --output-root "$SSE_STORAGE_ROOT/factors/finedge_trial" --sections financials,valuations,shareholding --format table
+stock-engine finedge-inspect --symbols HDFCBANK --check ratios,basic_financials --statement-type s --statement-code pl --ratio-type pr --format table
+stock-engine finedge-factor-export --symbols HDFCBANK --as-of 2026-05-28 --output-root "$SSE_STORAGE_ROOT/factors/finedge_banking_trial_v3" --sections banking --format table
+stock-engine factor-qa --symbols ITC,RELIANCE,HDFCBANK --as-of 2026-05-28 --format table
 stock-engine backtest-readiness --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv"
 stock-engine backtest-labels --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --horizons 5,20,60
 stock-engine technical-backtest --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --universe-policy eligible_history --horizons 5,20,60
 stock-engine engine-backtest --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --universe-policy eligible_history --score-type swing --horizons 5,20,60
+stock-engine conviction-calibrate --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --universe-policy eligible_history --horizons 5,20,60
 stock-engine financials-ingest --symbol RELIANCE --file financials.csv --as-of 2026-05-01
 stock-engine valuation-ingest --symbol RELIANCE --file valuations.csv --as-of 2026-05-01
 stock-engine shareholding-ingest --symbol RELIANCE --file shareholding.csv --as-of 2026-05-01
@@ -528,16 +570,20 @@ Canonical workflow:
 ```bash
 stock-engine security-master-ingest --file securities.csv
 stock-engine data-foundation --source yfinance --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv"
+stock-engine data-entitlements --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --format markdown
+stock-engine data-source-coverage --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --format markdown
 stock-engine refresh-market --source zerodha --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --lookback-days 10 --run-scan
 stock-engine backtest-readiness --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv"
 stock-engine backtest-labels --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv"
 stock-engine technical-backtest --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv"
 stock-engine engine-backtest --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --score-type swing
+stock-engine conviction-calibrate --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv"
 stock-engine financials-ingest --symbol RELIANCE --file financials.csv --as-of 2026-05-01
 stock-engine valuation-ingest --symbol RELIANCE --file valuations.csv --as-of 2026-05-01
 stock-engine shareholding-ingest --symbol RELIANCE --file shareholding.csv --as-of 2026-05-01
 stock-engine factor-template --output-root "$SSE_STORAGE_ROOT/factors/nifty50" --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --as-of 2026-05-18
 stock-engine factor-ingest --root "$SSE_STORAGE_ROOT/factors/nifty50" --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --as-of 2026-05-18 --min-coverage 0.8
+stock-engine factor-qa --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --as-of 2026-05-18 --format markdown
 stock-engine peer-report RELIANCE --as-of 2026-05-01 --format markdown
 stock-engine scan --source canonical --mode full --format table
 stock-engine analyze RELIANCE --source canonical
@@ -562,6 +608,7 @@ Backtest artifacts are written under the external storage root, for example:
 - `$SSE_STORAGE_ROOT/backtest/technical_ranking_evaluation.json`
 - `$SSE_STORAGE_ROOT/backtest/engine_swing_scores.csv`
 - `$SSE_STORAGE_ROOT/backtest/engine_swing_evaluation.json`
+- `$SSE_STORAGE_ROOT/calibration/calibration_report_latest.json`
 
 `technical-backtest` evaluates a transparent first-pass price/volume score.
 `engine-backtest` evaluates the actual engine scoring stack historically
@@ -572,6 +619,17 @@ configurable Indian cash-equity cost model. Override costs with:
 ```bash
 stock-engine engine-backtest --round-trip-cost-bps 35 --slippage-bps 5
 ```
+
+`conviction-calibrate` runs the engine backtest and writes the latest compact
+evidence artifact used by future scans. By default that artifact follows
+`$SSE_STORAGE_ROOT/calibration/calibration_report_latest.json`; override it with
+`SSE_CALIBRATION_REPORT_PATH` or `--output-path`.
+
+Engine backtests are point-in-time factor-aware: when canonical financial
+statements, valuations, and shareholding rows exist with filing/as-of dates
+available before each historical scoring date, those factors flow into the
+historical feature stack. Reports include `factor_coverage` so it is clear
+whether a calibration was fundamental-aware or price-only.
 
 Official index constituent CSVs, such as the NSE Indices Nifty 50 constituent
 file, should be downloaded into `$SSE_STORAGE_ROOT/universe/` and kept outside
@@ -608,7 +666,21 @@ stock-engine factor-ingest \
   --root "$SSE_STORAGE_ROOT/factors/nifty50" \
   --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" \
   --as-of 2026-05-18 \
+  --sections financials,valuations,shareholding \
   --min-coverage 0.8
+
+# Optional bank/NBFC-specific factor load for Financial Services names.
+stock-engine factor-ingest \
+  --root "$SSE_STORAGE_ROOT/factors/finedge_banking_trial" \
+  --symbols HDFCBANK \
+  --as-of 2026-05-28 \
+  --sections banking \
+  --min-coverage 1.0
+
+stock-engine factor-qa \
+  --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" \
+  --as-of 2026-05-18 \
+  --format table
 ```
 
 The generated files are:
@@ -616,10 +688,46 @@ The generated files are:
 - `financials.csv`: symbol-level statement rows with period-end and filing-date.
 - `valuations.csv`: market-cap/share-count/enterprise-value facts by as-of date.
 - `shareholding.csv`: promoter/FII/DII/public ownership by period-end and filing-date.
+- `banking.csv`: optional bank/NBFC factors such as NII, NIM, advances/deposit growth, CASA, GNPA/NNPA, provision coverage, credit cost, CAR/CET1, cost-income, ROA/ROE, and loan/deposit ratio.
+
+The FinEdge banking mapper joins statement rows with `ratios` and
+`basic_financials` to populate bank-specific fields. In the current free/basic
+trial, HDFCBANK produced usable NIM, GNPA/NNPA, CET1, cost-income, ROA/ROE, NII,
+growth, and loan/deposit metrics; ICICIBANK/SBIN/AXISBANK/KOTAKBANK returned
+401 responses on financial endpoints, so broad bank coverage likely needs paid
+or expanded vendor access.
 
 `factor-ingest` writes a coverage report under the external storage root and
-blocks the report-level `passed` flag unless financial, valuation, and
-shareholding coverage meet `--min-coverage`.
+blocks the report-level `passed` flag unless the selected sections meet
+`--min-coverage`. Use `--sections financials,shareholding` for a partial factor
+load that intentionally excludes valuation rows. Use `--sections banking` when
+loading bank/NBFC-specific factors separately for Financial Services names.
+
+`factor-qa` is the review gate before broad scans or backtests. It reads the
+canonical store and shows, per symbol, the latest financial statement, valuation
+date, shareholding period, derived PE/PB/ROE/cash-flow ratios, and mapping
+warnings such as stale valuation rows, missing share count, unit-mismatch
+signals, or bank/NBFC-specific factor gaps. When `banking.csv` has been ingested,
+it also reports bank-specific QA metrics, metric coverage, and a composite
+banking quality score.
+
+`data-entitlements` records source plan metadata: enabled domains, allowed
+symbols, credential env names, rate limits when known, storage rights,
+redistribution rights, commercial-use status, known limits, and next actions.
+`data-source-coverage` is the aggregate source-readiness report. It reads the
+canonical DB plus the latest ignored quality/vendor artifacts and writes
+`data_source_coverage_report.json` and `data_source_coverage_report.md` under
+`$SSE_STORAGE_ROOT/quality`. It separates market coverage, factor coverage,
+broker-source health, FinEdge entitlement coverage, and still-open gaps such as
+corporate actions, events/documents, and historical constituents. The key
+difference is that it now reports both actual coverage and entitled coverage, so
+FinEdge Basic's 3-symbol universe is treated as a plan boundary rather than a
+mapper failure.
+
+When bank/NBFC factors are available, scan/analyze/report flows carry them into
+feature vectors and signal reports. Financial Services names with missing or
+sparse `banking.csv` coverage receive lower symbol-level source confidence, so
+generic industrial ratios do not create false conviction for banks.
 
 The legacy `python main.py screen` and `python main.py analyze RELIANCE` flows remain available.
 
@@ -635,6 +743,7 @@ Professional stock signal reports include:
 - Peer context: sector PE/PB z-score and valuation position versus covered peers
 - Event/NLP metrics: event scores, sentiment, management tone, uncertainty, governance risk
 - Risk metrics: liquidity, volatility, leverage, valuation, earnings, event/governance, missing-data risk
+- Conviction metrics: score strength, cross-horizon agreement, data/source confidence, backtest support, regime confirmation, risk resilience
 - Explanation: positive drivers, negative drivers, why selected/rejected, monitorables, invalidation logic
 
 Missing data is explicitly marked as unavailable or included in `missing_data_warnings`; the engine should not invent financials or document facts.

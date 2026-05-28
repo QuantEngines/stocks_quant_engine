@@ -14,6 +14,7 @@ from stock_screener_engine.backtest.calibration import (
     TunedWeightPriors,
     WeightPriorAutoTuner,
 )
+from stock_screener_engine.core.banking_features import banking_features_for
 from stock_screener_engine.core.entities import (
     FeatureVector,
     FundamentalsSnapshot,
@@ -22,6 +23,11 @@ from stock_screener_engine.core.entities import (
     ScoreCard,
     SignalResult,
     StockSnapshot,
+)
+from stock_screener_engine.core.conviction_evidence import (
+    load_backtest_evidence,
+    quality_confidence_features,
+    symbol_source_features,
 )
 from stock_screener_engine.core.features import FeatureEngine
 from stock_screener_engine.core.ml_ranking import LinearRankModel
@@ -37,6 +43,7 @@ from stock_screener_engine.core.scoring import (
     SwingWeights,
     build_score_card,
 )
+from stock_screener_engine.core.scoring_conviction import ConvictionScorer, ConvictionWeights
 from stock_screener_engine.core.signals import SignalGenerator
 from stock_screener_engine.core.text_feature_integration import TextFeatureIntegration
 from stock_screener_engine.core.universe import UniverseSelector
@@ -127,6 +134,17 @@ class ResearchEngine:
                 text_uncertainty_risk=settings.scoring.risk_weights.text_uncertainty_risk,
             ),
         )
+        self.conviction_scorer = ConvictionScorer(
+            weights=ConvictionWeights(
+                signal_agreement=settings.scoring.conviction_weights.signal_agreement,
+                data_completeness=settings.scoring.conviction_weights.data_completeness,
+                source_confidence=settings.scoring.conviction_weights.source_confidence,
+                backtest_evidence=settings.scoring.conviction_weights.backtest_evidence,
+                sector_regime_confirmation=settings.scoring.conviction_weights.sector_regime_confirmation,
+                risk_resilience=settings.scoring.conviction_weights.risk_resilience,
+            ),
+            max_risk_penalty=settings.scoring.max_risk_penalty,
+        )
         self.signal_generator = SignalGenerator(
             long_term_min_score=settings.scoring.long_term_min_score,
             swing_min_score=settings.scoring.swing_min_score,
@@ -178,13 +196,30 @@ class ResearchEngine:
         if not feature_quality.passed:
             logger.warning("Feature quality issues: %s", feature_quality.issues)
 
+        conviction_features, conviction_evidence = self._conviction_evidence_features(
+            snapshot_quality=snapshot_quality.to_dict(),
+            feature_quality=feature_quality.to_dict(),
+            freshness_quality=freshness_quality,
+        )
+        features = self._apply_conviction_evidence(features, conviction_features)
+        feature_quality = self.quality.validate_features(
+            features,
+            expected_symbols=[s.symbol for s in selected],
+        )
+
         score_cards: list[ScoreCard] = []
         long_signals: list[SignalResult] = []
         swing_signals: list[SignalResult] = []
         short_signals: list[SignalResult] = []
 
         for fv in features:
-            card = build_score_card(fv, self.long_scorer, self.swing_scorer, self.risk_scorer)
+            card = build_score_card(
+                fv,
+                self.long_scorer,
+                self.swing_scorer,
+                self.risk_scorer,
+                self.conviction_scorer,
+            )
             _, _, risk_flags = self.risk_scorer.score(fv)
             sector = sector_map.get(fv.symbol, "")
             score_cards.append(card)
@@ -315,6 +350,7 @@ class ResearchEngine:
             "features": features,
             "text_features": text_feature_rows,
             "nlp_summary": nlp_summary,
+            "conviction_evidence": conviction_evidence,
             "scores": score_cards,
             "long_ranked": rank_by_long_term(score_cards),
             "swing_ranked": rank_by_swing(score_cards),
@@ -389,6 +425,43 @@ class ResearchEngine:
                 "warnings": [],
                 "metrics": {},
             }
+
+    def _conviction_evidence_features(
+        self,
+        snapshot_quality: dict[str, object],
+        feature_quality: dict[str, object],
+        freshness_quality: dict[str, object] | None,
+    ) -> tuple[dict[str, float], dict[str, object]]:
+        quality_features = quality_confidence_features(
+            snapshot_quality=snapshot_quality,
+            feature_quality=feature_quality,
+            freshness_quality=freshness_quality,
+        )
+        backtest_features, backtest_diagnostics = load_backtest_evidence(
+            self.settings.scoring.calibration_auto_tune.report_path
+        )
+        evidence_features = {**quality_features, **backtest_features}
+        diagnostics = {
+            **backtest_diagnostics,
+            "source_confidence": round(quality_features["source_confidence"], 6),
+            "market_data_confidence": round(quality_features["market_data_confidence"], 6),
+            "source_reconciliation_score": round(quality_features["source_reconciliation_score"], 6),
+            "features": sorted(evidence_features),
+        }
+        return evidence_features, diagnostics
+
+    def _apply_conviction_evidence(
+        self,
+        features: list[FeatureVector],
+        global_evidence: dict[str, float],
+    ) -> list[FeatureVector]:
+        enriched: list[FeatureVector] = []
+        for fv in features:
+            values = dict(fv.values)
+            values.update(global_evidence)
+            values.update(symbol_source_features(values))
+            enriched.append(FeatureVector(symbol=fv.symbol, as_of=fv.as_of, values=values))
+        return enriched
 
     def _build_nlp_summary(
         self,
@@ -485,6 +558,7 @@ class ResearchEngine:
         sector_map: dict[str, str] = {s.symbol: s.sector for s in snapshots}
         fundamental_map: dict[str, FundamentalsSnapshot] = {}
         governance_map: dict[str, GovernanceSnapshot] = {}
+        banking_map: dict[str, object] = {}
         as_of = max((s.as_of for s in snapshots), default=datetime.utcnow().date())
         if self.financials is not None:
             symbols = [s.symbol for s in snapshots]
@@ -496,6 +570,13 @@ class ResearchEngine:
                 governance_map = self.financials.get_governance_as_of(symbols, as_of=as_of)  # type: ignore[attr-defined]
             else:
                 governance_map = self.financials.get_governance(symbols)
+            banking_loader = getattr(self.financials, "get_banking_factors_as_of", None)
+            if callable(banking_loader):
+                try:
+                    loaded_banking = banking_loader(symbols, as_of=as_of)
+                    banking_map = loaded_banking if isinstance(loaded_banking, dict) else {}
+                except Exception as exc:  # pragma: no cover - defensive optional-provider path
+                    logger.warning("Bank/NBFC factor context unavailable: %s", exc)
 
         pe_by_symbol: dict[str, float] = {}
         pb_by_symbol: dict[str, float] = {}
@@ -588,6 +669,11 @@ class ResearchEngine:
                     valuation_context=valuation_context,
                     text_feature_values=self.text_feature_integration.merge(snap.symbol, text_feature_map),
                 )
+            vector = _enrich_with_banking_features(
+                vector=vector,
+                sector=snap.sector,
+                banking_record=banking_map.get(snap.symbol),
+            )
             vectors.append(vector)
         return vectors, sector_map, text_feature_rows
 
@@ -639,3 +725,14 @@ def _snapshot_has_fundamental_data(snapshot: StockSnapshot) -> bool:
             snapshot.insider_activity_score,
         )
     )
+
+
+def _enrich_with_banking_features(
+    *,
+    vector: FeatureVector,
+    sector: str,
+    banking_record: object | None,
+) -> FeatureVector:
+    values = dict(vector.values)
+    values.update(banking_features_for(sector=sector, record=banking_record))
+    return FeatureVector(symbol=vector.symbol, as_of=vector.as_of, values=values)

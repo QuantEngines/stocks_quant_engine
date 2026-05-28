@@ -13,6 +13,7 @@ from stock_screener_engine.app import (
 from stock_screener_engine.data_sources.financials.provider import PointInTimeFinancialsProvider
 from stock_screener_engine.data_sources.financials.sqlite_financials_provider import SQLiteFinancialsProvider
 from stock_screener_engine.data_sources.schemas import (
+    BankingFactorRecord,
     EquityValuationRecord,
     FinancialStatementRecord,
     SecurityMasterRecord,
@@ -337,6 +338,7 @@ def test_factor_template_creates_external_bulk_csvs(monkeypatch, tmp_path) -> No
     assert (output_root / "financials.csv").exists()
     assert (output_root / "valuations.csv").exists()
     assert (output_root / "shareholding.csv").exists()
+    assert (output_root / "banking.csv").exists()
     assert "AAA" in (output_root / "financials.csv").read_text(encoding="utf-8")
 
 
@@ -397,6 +399,136 @@ def test_factor_ingest_persists_bulk_pit_factors(monkeypatch, tmp_path) -> None:
     assert valuations["coverage"] == 1.0
     assert shareholding["coverage"] == 1.0
     assert (tmp_path / "quality" / "factor_bootstrap_ingest_report.json").exists()
+
+
+def test_factor_ingest_can_limit_sections(monkeypatch, tmp_path) -> None:
+    factor_root = tmp_path / "factor_input"
+    factor_root.mkdir()
+    (factor_root / "financials.csv").write_text(
+        "\n".join(
+            [
+                "symbol,period_end,filing_date,statement_type,revenue,ebit,net_income,operating_cash_flow,capex,total_debt,equity,total_assets,current_assets,current_liabilities,interest_expense,source_id",
+                "AAA,2026-03-31,2026-04-20,annual,1200,250,180,240,50,200,720,1700,650,340,25,fy26",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (factor_root / "shareholding.csv").write_text(
+        "\n".join(
+            [
+                "symbol,period_end,filing_date,promoter_pct,fii_pct,dii_pct,public_pct,source_id",
+                "AAA,2026-03-31,2026-04-20,52,11,16,21,q4",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SSE_STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setenv("SSE_SQLITE_PATH", str(tmp_path / "market.db"))
+
+    report = run_factor_ingest(
+        root=str(factor_root),
+        symbols=["AAA"],
+        as_of=date(2026, 5, 1),
+        min_coverage=1.0,
+        sections=["financials", "shareholding"],
+    )
+
+    assert report["passed"] is True
+    assert report["sections"] == ["financials", "shareholding"]
+    assert report["valuations"]["skipped"] is True
+    assert "valuations" not in report["coverage"]
+
+
+def test_factor_ingest_does_not_let_existing_coverage_mask_missing_selected_input(monkeypatch, tmp_path) -> None:
+    factor_root = tmp_path / "factor_input"
+    factor_root.mkdir()
+    (factor_root / "financials.csv").write_text(
+        "\n".join(
+            [
+                "symbol,period_end,filing_date,statement_type,revenue,ebit,net_income,operating_cash_flow,capex,total_debt,equity,total_assets,current_assets,current_liabilities,interest_expense,source_id",
+                "AAA,2026-03-31,2026-04-20,annual,1200,250,180,240,50,200,720,1700,650,340,25,fy26",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (factor_root / "shareholding.csv").write_text(
+        "\n".join(
+            [
+                "symbol,period_end,filing_date,promoter_pct,fii_pct,dii_pct,public_pct,source_id",
+                "AAA,2026-03-31,2026-04-20,52,11,16,21,q4",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SSE_STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setenv("SSE_SQLITE_PATH", str(tmp_path / "market.db"))
+    store = MarketDataStore(str(tmp_path / "market.db"))
+    try:
+        store.upsert_equity_valuations(
+            [
+                EquityValuationRecord(
+                    venue="NSE",
+                    symbol="AAA",
+                    as_of=date(2026, 4, 30),
+                    market_cap=2000.0,
+                    shares_outstanding=100.0,
+                    source_id="existing",
+                )
+            ]
+        )
+    finally:
+        store.close()
+
+    report = run_factor_ingest(
+        root=str(factor_root),
+        symbols=["AAA"],
+        as_of=date(2026, 5, 1),
+        min_coverage=1.0,
+    )
+
+    assert report["coverage"]["valuations"]["coverage"] == 1.0
+    assert report["valuations"]["input_rows"] == 0
+    assert report["valuations"]["input_coverage"] == 0.0
+    assert report["passed"] is False
+    assert any(issue["severity"] == "error" for issue in report["valuations"]["quality_issues"])
+
+
+def test_factor_ingest_persists_banking_factors(monkeypatch, tmp_path) -> None:
+    factor_root = tmp_path / "factor_input"
+    factor_root.mkdir()
+    (factor_root / "banking.csv").write_text(
+        "\n".join(
+            [
+                "symbol,period_end,filing_date,net_interest_income,net_interest_margin_pct,advances_growth_pct,deposits_growth_pct,casa_ratio_pct,gnpa_ratio_pct,nnpa_ratio_pct,provision_coverage_ratio_pct,credit_cost_pct,capital_adequacy_ratio_pct,cet1_ratio_pct,cost_to_income_ratio_pct,roa_pct,roe_pct,loan_to_deposit_ratio_pct,source_id",
+                "HDFCBANK,2026-03-31,2026-04-20,1000,3.6,12,10,38,1.2,0.35,75,0.4,18,16,39,1.8,15,82,bank-q4",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SSE_STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setenv("SSE_SQLITE_PATH", str(tmp_path / "market.db"))
+
+    report = run_factor_ingest(
+        root=str(factor_root),
+        symbols=["HDFCBANK"],
+        as_of=date(2026, 5, 1),
+        min_coverage=1.0,
+        sections=["banking"],
+    )
+
+    store = MarketDataStore(str(tmp_path / "market.db"))
+    try:
+        rows = store.get_banking_factors("HDFCBANK", as_of=date(2026, 5, 1), venue="NSE")
+        coverage = store.banking_factor_coverage(["HDFCBANK"], as_of=date(2026, 5, 1), venue="NSE")
+    finally:
+        store.close()
+
+    assert report["passed"] is True
+    assert report["banking"]["persisted"] == 1
+    assert report["banking"]["input_coverage"] == 1.0
+    assert rows[0].net_interest_margin_pct == 3.6
+    assert rows[0].gnpa_ratio_pct == 1.2
+    assert coverage["coverage"] == 1.0
 
 
 def test_run_security_master_ingest_persists_csv_rows(monkeypatch, tmp_path) -> None:

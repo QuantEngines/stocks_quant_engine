@@ -76,6 +76,30 @@ class ShareholdingRecord:
 
 
 @dataclass(frozen=True)
+class BankingFactorRecord:
+    venue: str
+    symbol: str
+    period_end: date
+    filing_date: date
+    net_interest_income: float = 0.0
+    net_interest_margin_pct: float = 0.0
+    advances_growth_pct: float = 0.0
+    deposits_growth_pct: float = 0.0
+    casa_ratio_pct: float = 0.0
+    gnpa_ratio_pct: float = 0.0
+    nnpa_ratio_pct: float = 0.0
+    provision_coverage_ratio_pct: float = 0.0
+    credit_cost_pct: float = 0.0
+    capital_adequacy_ratio_pct: float = 0.0
+    cet1_ratio_pct: float = 0.0
+    cost_to_income_ratio_pct: float = 0.0
+    roa_pct: float = 0.0
+    roe_pct: float = 0.0
+    loan_to_deposit_ratio_pct: float = 0.0
+    source_id: str = ""
+
+
+@dataclass(frozen=True)
 class AnnouncementRecord:
     venue: str
     symbol: str
