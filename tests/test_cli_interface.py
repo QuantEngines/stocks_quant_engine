@@ -8,7 +8,7 @@ def test_cli_scan_table_uses_professional_rows(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         cli_main,
         "run_screen",
-        lambda config_path=None: {
+        lambda **kwargs: {
             "professional_signal_reports": {
                 "console_rows": {
                     "long_term": [{"symbol": "AAA", "score": 80.0}],
@@ -27,9 +27,10 @@ def test_cli_scan_table_uses_professional_rows(monkeypatch, capsys) -> None:
 def test_cli_source_override_sets_market_provider(monkeypatch, capsys) -> None:
     monkeypatch.delenv("SSE_MARKET_PROVIDER", raising=False)
 
-    def fake_run_screen(config_path=None):
+    def fake_run_screen(**kwargs):
         return {
             "source": cli_main.os.environ.get("SSE_MARKET_PROVIDER"),
+            "readiness_check": kwargs["readiness_check"],
             "professional_signal_reports": {"console_rows": {"long_term": [], "swing": []}},
         }
 
@@ -39,6 +40,43 @@ def test_cli_source_override_sets_market_provider(monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
 
     assert '"source": "canonical"' in out
+    assert '"readiness_check": "warn"' in out
+
+
+def test_cli_scan_passes_readiness_and_universe_args(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_screen",
+        lambda **kwargs: {
+            "scan_mode": kwargs["scan_mode"],
+            "symbols": kwargs["symbols"],
+            "universe_file": kwargs["universe_file"],
+            "readiness_check": kwargs["readiness_check"],
+            "readiness_lookback_years": kwargs["readiness_lookback_years"],
+            "professional_signal_reports": {"console_rows": {"long_term": [], "swing": []}},
+        },
+    )
+
+    cli_main.main([
+        "scan",
+        "--symbols",
+        "ITC,RELIANCE",
+        "--universe-file",
+        "/tmp/nifty50.csv",
+        "--readiness-check",
+        "enforce",
+        "--readiness-lookback-years",
+        "3",
+        "--format",
+        "json",
+    ])
+    out = capsys.readouterr().out
+
+    assert '"symbols": [' in out
+    assert '"ITC"' in out
+    assert '"/tmp/nifty50.csv"' in out
+    assert '"readiness_check": "enforce"' in out
+    assert '"readiness_lookback_years": 3' in out
 
 
 def test_cli_document_ingest_delegates(monkeypatch, capsys) -> None:
@@ -170,6 +208,51 @@ def test_cli_data_source_coverage_emits_markdown(monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
 
     assert out.startswith("# Data Source Coverage")
+
+
+def test_cli_data_readiness_emits_markdown(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_data_readiness",
+        lambda **kwargs: {
+            "pipeline": "data_readiness",
+            "mode": kwargs["mode"],
+            "decision": "block",
+            "console_rows": [{"domain": "financials", "severity": "block"}],
+            "markdown": "# Data Readiness Gate\n",
+        },
+    )
+
+    cli_main.main([
+        "data-readiness",
+        "--end",
+        "2026-05-28",
+        "--mode",
+        "long-term-scan",
+        "--format",
+        "markdown",
+    ])
+    out = capsys.readouterr().out
+
+    assert out.startswith("# Data Readiness Gate")
+
+
+def test_cli_data_source_priority_emits_table(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_data_source_priority",
+        lambda **kwargs: {
+            "pipeline": "data_source_priority",
+            "rows": [{"domain": "financials", "primary": ["finedge"], "status": "sandbox_ready"}],
+            "markdown": "# Data Source Priority Map\n",
+        },
+    )
+
+    cli_main.main(["data-source-priority", "--format", "table"])
+    out = capsys.readouterr().out
+
+    assert '"domain": "financials"' in out
+    assert '"status": "sandbox_ready"' in out
 
 
 def test_cli_data_entitlements_emits_table(monkeypatch, capsys) -> None:
@@ -399,6 +482,31 @@ def test_cli_finedge_probe_delegates(monkeypatch, capsys) -> None:
     assert '"coverage": 1.0' in out
 
 
+def test_cli_finedge_probe_accepts_universe_file(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_finedge_probe",
+        lambda **kwargs: {
+            "pipeline": "finedge_probe",
+            "symbols": kwargs["symbols"],
+            "universe_file": kwargs["universe_file"],
+            "checks": kwargs["checks"],
+        },
+    )
+
+    cli_main.main([
+        "finedge-probe",
+        "--universe-file",
+        "/tmp/nifty50.csv",
+        "--check",
+        "smoke",
+    ])
+    out = capsys.readouterr().out
+
+    assert '"symbols": []' in out
+    assert '"/tmp/nifty50.csv"' in out
+
+
 def test_cli_finedge_inspect_delegates(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         cli_main,
@@ -457,6 +565,33 @@ def test_cli_finedge_inspect_delegates(monkeypatch, capsys) -> None:
     assert '"revenue"' in out
 
 
+def test_cli_finedge_inspect_accepts_universe_file(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_finedge_inspect",
+        lambda **kwargs: {
+            "pipeline": "finedge_schema_inspection",
+            "symbols": kwargs["symbols"],
+            "universe_file": kwargs["universe_file"],
+            "checks": kwargs["checks"],
+            "symbol_reports": [],
+            "market_report": {"checks": {}},
+        },
+    )
+
+    cli_main.main([
+        "finedge-inspect",
+        "--universe-file",
+        "/tmp/nifty50.csv",
+        "--check",
+        "financials",
+    ])
+    out = capsys.readouterr().out
+
+    assert '"symbols": []' in out
+    assert '"/tmp/nifty50.csv"' in out
+
+
 def test_cli_finedge_factor_export_delegates(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         cli_main,
@@ -497,6 +632,65 @@ def test_cli_finedge_factor_export_delegates(monkeypatch, capsys) -> None:
     assert '"section": "financials"' in out
     assert '"rows": 2' in out
     assert "factor_root/financials.csv" in out
+
+
+def test_cli_finedge_factor_export_accepts_universe_file(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_finedge_factor_export",
+        lambda **kwargs: {
+            "pipeline": "finedge_factor_export",
+            "symbols": kwargs["symbols"],
+            "universe_file": kwargs["universe_file"],
+            "as_of": kwargs["as_of"].isoformat(),
+            "output_root": kwargs["output_root"],
+            "sections": kwargs["sections"],
+            "passed": True,
+            "row_counts": {"financials": 0, "valuations": 0, "shareholding": 0, "ownership_details": 0},
+            "files": {},
+            "issues": [],
+        },
+    )
+
+    cli_main.main([
+        "finedge-factor-export",
+        "--universe-file",
+        "/tmp/nifty50.csv",
+        "--as-of",
+        "2026-05-28",
+        "--output-root",
+        "factor_root",
+    ])
+    out = capsys.readouterr().out
+
+    assert '"symbols": []' in out
+    assert '"/tmp/nifty50.csv"' in out
+
+
+def test_cli_finedge_onboarding_plan_delegates(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_main,
+        "run_finedge_onboarding_plan",
+        lambda **kwargs: {
+            "pipeline": "finedge_onboarding_plan",
+            "as_of": kwargs["as_of"].isoformat(),
+            "target_domains": [{"domain": "financials", "coverage": 0.06}],
+            "markdown": "# FinEdge Paid Onboarding Plan\n",
+        },
+    )
+
+    cli_main.main([
+        "finedge-onboarding-plan",
+        "--end",
+        "2026-05-28",
+        "--symbols",
+        "ITC,RELIANCE,HDFCBANK",
+        "--format",
+        "markdown",
+    ])
+    out = capsys.readouterr().out
+
+    assert out.startswith("# FinEdge Paid Onboarding Plan")
 
 
 def test_cli_backtest_readiness_delegates(monkeypatch, capsys) -> None:

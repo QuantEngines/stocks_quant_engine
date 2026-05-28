@@ -84,9 +84,32 @@ class SectorIntelligenceBuilder:
         swing_signals: list[SignalResult],
     ) -> SectorIntelligenceReport:
         vals = [dict(f.values) for f in features]
-        momentum_score = _score100(_avg(vals, ["trend_strength", "momentum_strength", "relative_strength_proxy"]))
-        fundamentals_score = _score100(_avg(vals, ["growth_quality", "profitability_quality", "balance_sheet_health", "cash_flow_quality"]))
-        valuation_score = _score100(_avg(vals, ["valuation_sanity"]))
+        momentum_score = _score100(
+            _avg(
+                vals,
+                [
+                    "trend_strength",
+                    "momentum_strength",
+                    "relative_strength_proxy",
+                    "cross_sectional_momentum_rank",
+                    "sector_relative_momentum_rank",
+                ],
+            )
+        )
+        fundamentals_score = _score100(
+            _avg(
+                vals,
+                [
+                    "growth_quality",
+                    "profitability_quality",
+                    "balance_sheet_health",
+                    "cash_flow_quality",
+                    "cross_sectional_quality_rank",
+                    "sector_relative_quality_rank",
+                ],
+            )
+        )
+        valuation_score = _score100(_avg(vals, ["valuation_sanity", "cross_sectional_value_rank", "quality_value_composite"]))
         avg_risk_penalty = _avg_score_penalty([scores_by_symbol[f.symbol] for f in features if f.symbol in scores_by_symbol])
         risk_score = round(max(0.0, 100.0 - avg_risk_penalty * (100.0 / 30.0)), 2)
         event_macro_score = _score100(_avg(vals, ["event_catalyst", "sentiment_score", "sector_momentum", "market_regime_score"]))
@@ -134,7 +157,12 @@ class SectorIntelligenceBuilder:
                 "Earnings breadth and margin trend",
                 "Policy, input-cost, and currency sensitivity",
             ],
-            coverage={"stock_count": len(features), "scored_stock_count": sum(1 for f in features if f.symbol in scores_by_symbol)},
+            coverage={
+                "stock_count": len(features),
+                "scored_stock_count": sum(1 for f in features if f.symbol in scores_by_symbol),
+                "avg_feature_coverage": round(_avg(vals, ["feature_coverage_score"]), 4),
+                "avg_research_readiness": round(_avg(vals, ["research_readiness_score"]), 4),
+            },
         )
 
 

@@ -41,10 +41,12 @@ def test_professional_signal_report_has_required_sections() -> None:
         "risk",
         "conviction",
         "peer_context",
+        "cross_sectional",
         "explanation",
     ]:
         assert key in payload
     assert payload["summary"]["rank"] == 1
+    assert payload["cross_sectional"]["research_readiness_score"] is not None
     assert "missing_data_warnings" in payload["explanation"]
 
 
@@ -68,4 +70,6 @@ def test_signal_report_markdown_and_console_rows() -> None:
 
     assert "# " in markdown
     assert "Signal Report" in markdown
+    assert "Cross-Sectional Context" in markdown
     assert rows[0]["symbol"] == reports[0].identity.symbol
+    assert "readiness" in rows[0]

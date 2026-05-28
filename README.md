@@ -330,6 +330,7 @@ All settings are overridable with environment variables:
 | `SSE_CANONICAL_ADJUSTED_HISTORY` | `true` | Use split/bonus-adjusted stored bars for historical features |
 | `SSE_CANONICAL_STRICT_FRESHNESS` | `false` | Block scans when canonical bars are stale instead of warning |
 | `SSE_CANONICAL_MAX_STALENESS_DAYS` | `3` | Maximum allowed canonical bar staleness in strict mode |
+| `SSE_INCLUDE_CROSS_SECTIONAL_FEATURES` | `true` | Add universe/sector-relative ranks, feature coverage, liquidity percentile, and research-readiness features before scoring |
 | `SSE_CALIBRATION_REPORT_PATH` | `$SSE_STORAGE_ROOT/calibration/calibration_report_latest.json` | Latest conviction/backtest evidence artifact |
 | `SSE_INDIANAPI_API_KEY` | empty | Optional IndianAPI key used by `indianapi-probe` |
 | `SSE_INDIANAPI_STOCK_BASE_URL` | `https://stock.indianapi.in` | IndianAPI stock/company endpoint base URL |
@@ -363,6 +364,7 @@ Outputs expose:
 - Missing feature hints
 - Deterministic rejection reasons
 - Horizon tag (`6-24 months` or `3-15 trading days`)
+- Cross-sectional and sector-relative context: momentum rank, quality rank, value rank, feature coverage, liquidity percentile, and research-readiness score
 
 ### LLM-Assisted Event Intelligence
 
@@ -537,6 +539,10 @@ stock-engine data-foundation --source yfinance --lookback-years 5 --universe-fil
 stock-engine data-quality --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv"
 stock-engine data-entitlements --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --format markdown
 stock-engine data-source-coverage --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --format markdown
+stock-engine data-source-priority --format markdown
+stock-engine data-readiness --mode long-term-scan --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --format markdown
+stock-engine scan --source canonical --mode full --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --readiness-check warn --format table
+stock-engine scan --source canonical --mode full --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --readiness-check enforce --format json
 stock-engine refresh-market --source zerodha --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --lookback-days 10 --batch-size 25 --retries 2 --run-scan
 stock-engine broker-health --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --sources zerodha,icici_breeze --lookback-days 10 --retries 2 --primary-source zerodha --lagged-sources icici_breeze --format table
 stock-engine indianapi-probe --symbols RELIANCE,TCS,INFY,HDFCBANK,ICICIBANK --check stock,financials,shareholding,analyst,forecasts,history --format table
@@ -550,6 +556,7 @@ stock-engine finedge-inspect --symbols ITC,RELIANCE,HDFCBANK --check ownership -
 stock-engine finedge-factor-export --symbols ITC,RELIANCE,HDFCBANK --as-of 2026-05-28 --output-root "$SSE_STORAGE_ROOT/factors/finedge_trial" --sections financials,valuations,shareholding --format table
 stock-engine finedge-inspect --symbols HDFCBANK --check ratios,basic_financials --statement-type s --statement-code pl --ratio-type pr --format table
 stock-engine finedge-factor-export --symbols HDFCBANK --as-of 2026-05-28 --output-root "$SSE_STORAGE_ROOT/factors/finedge_banking_trial_v3" --sections banking --format table
+stock-engine finedge-onboarding-plan --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --end 2026-05-28 --format markdown
 stock-engine factor-qa --symbols ITC,RELIANCE,HDFCBANK --as-of 2026-05-28 --format table
 stock-engine backtest-readiness --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv"
 stock-engine backtest-labels --lookback-years 5 --universe-file "$SSE_STORAGE_ROOT/universe/nifty50.csv" --horizons 5,20,60
@@ -724,6 +731,30 @@ difference is that it now reports both actual coverage and entitled coverage, so
 FinEdge Basic's 3-symbol universe is treated as a plan boundary rather than a
 mapper failure.
 
+`data-source-priority` is the canonical source hierarchy by data domain. It
+keeps the engine's source choices explicit: exchange and broker data lead
+market/identity coverage, FinEdge is the paid-data candidate for fundamentals,
+valuation, ownership, banking factors, and documents, and yfinance/FMP/IndianAPI
+remain fallback or paused sources until proven. The report is written under
+`$SSE_STORAGE_ROOT/quality`, outside git.
+
+`data-readiness` applies hard coverage gates on top of `data-source-coverage`.
+Modes include `swing-scan`, `long-term-scan`, `deep-research`, and `backtest`.
+For example, a swing scan can pass with strong security master and OHLCV
+coverage, while long-term research blocks until financials, valuations, and
+shareholding reach configured thresholds.
+
+`scan` is readiness-aware. By default it uses `--readiness-check warn`, attaches
+the relevant data-readiness gate to JSON output, and prepends readiness warnings
+to table/markdown output when a required domain is below threshold. Use
+`--readiness-check enforce` to block production scans until the gate passes, or
+`--readiness-check off` for low-level diagnostics.
+
+`finedge-onboarding-plan` creates an ignored local checklist and command
+sequence for the paid FinEdge rollout. It does not call FinEdge; it summarizes
+current gaps, questions to confirm before paying, post-subscription probe/export
+commands, ingest/QA steps, and success criteria.
+
 When bank/NBFC factors are available, scan/analyze/report flows carry them into
 feature vectors and signal reports. Financial Services names with missing or
 sparse `banking.csv` coverage receive lower symbol-level source confidence, so
@@ -741,6 +772,7 @@ Professional stock signal reports include:
 - Fundamental metrics: growth, profitability, leverage, cash-flow quality where available
 - Valuation metrics: PE/PB, sector/history z-score proxies, earnings yield, valuation risk
 - Peer context: sector PE/PB z-score and valuation position versus covered peers
+- Cross-sectional context: universe/sector momentum ranks, quality/value ranks, liquidity percentile, feature coverage, and research readiness
 - Event/NLP metrics: event scores, sentiment, management tone, uncertainty, governance risk
 - Risk metrics: liquidity, volatility, leverage, valuation, earnings, event/governance, missing-data risk
 - Conviction metrics: score strength, cross-horizon agreement, data/source confidence, backtest support, regime confirmation, risk resilience

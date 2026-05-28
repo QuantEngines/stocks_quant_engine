@@ -18,7 +18,9 @@ def test_load_default_settings() -> None:
     assert settings.scoring.ranking.portfolio.min_position_notional >= 0
     assert settings.scoring.ranking.portfolio.long_min_position_notional is None
     assert settings.scoring.ranking.portfolio.swing_sector_target_weights is None
+    assert settings.features.include_cross_sectional_features is True
     assert settings.scoring.conviction_weights.data_completeness > 0
+    assert settings.coverage_gates.profiles["long_term_scan"]["financials"] == 0.80
     assert settings.documents.enabled is True
     assert settings.output.include_signal_reports is True
     assert any(source.source_id == "finedge" for source in settings.data_entitlements.sources)

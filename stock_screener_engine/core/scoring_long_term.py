@@ -51,13 +51,33 @@ class LongTermInvestmentScorer:
         rg = linear_score(fa.get("revenue_growth", 0.0), 0.0, 0.30)
         stability = clamp(fa.get("earnings_stability", 0.0))
         earnings_sentiment = clamp((fa.get("earnings_sentiment_score", 0.0) + 1.0) / 2.0)
-        score = clamp(0.45 * eg + 0.25 * rg + 0.2 * stability + 0.10 * earnings_sentiment)
+        quality_rank = clamp(fa.get("cross_sectional_quality_rank", 0.0))
+        sector_quality_rank = clamp(fa.get("sector_relative_quality_rank", 0.0))
+        score = clamp(
+            0.38 * eg
+            + 0.22 * rg
+            + 0.18 * stability
+            + 0.08 * earnings_sentiment
+            + 0.09 * quality_rank
+            + 0.05 * sector_quality_rank
+        )
         return CategoryScore(
             name="growth_quality",
             score_0_1=score,
             weight=self.weights.growth_quality,
             contribution=score * self.weights.growth_quality,
-            missing_features=[k for k in ["growth_quality", "revenue_growth", "earnings_stability", "earnings_sentiment_score"] if k in fa.missing],
+            missing_features=[
+                k
+                for k in [
+                    "growth_quality",
+                    "revenue_growth",
+                    "earnings_stability",
+                    "earnings_sentiment_score",
+                    "cross_sectional_quality_rank",
+                    "sector_relative_quality_rank",
+                ]
+                if k in fa.missing
+            ],
         )
 
     def _profitability_quality(self, fa: FeatureAccessor) -> CategoryScore:
@@ -100,13 +120,19 @@ class LongTermInvestmentScorer:
     def _valuation_sanity(self, fa: FeatureAccessor) -> CategoryScore:
         valuation = clamp(fa.get("valuation_sanity", 0.0))
         pe = inverse_linear_score(fa.get("pe_ratio", 25.0), 8.0, 45.0)
-        score = clamp(0.7 * valuation + 0.3 * pe)
+        value_rank = clamp(fa.get("cross_sectional_value_rank", 0.0))
+        quality_value = clamp(fa.get("quality_value_composite", 0.0))
+        score = clamp(0.55 * valuation + 0.20 * pe + 0.15 * value_rank + 0.10 * quality_value)
         return CategoryScore(
             name="valuation_sanity",
             score_0_1=score,
             weight=self.weights.valuation_sanity,
             contribution=score * self.weights.valuation_sanity,
-            missing_features=[k for k in ["valuation_sanity", "pe_ratio"] if k in fa.missing],
+            missing_features=[
+                k
+                for k in ["valuation_sanity", "pe_ratio", "cross_sectional_value_rank", "quality_value_composite"]
+                if k in fa.missing
+            ],
         )
 
     def _governance_proxy(self, fa: FeatureAccessor) -> CategoryScore:

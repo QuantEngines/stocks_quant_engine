@@ -43,6 +43,8 @@ def test_research_engine_outputs() -> None:
     assert "swing_portfolio_positions" in output
     assert "conviction_evidence" in output
     assert "source_confidence" in output["features"][0].values
+    assert "cross_sectional_momentum_rank" in output["features"][0].values
+    assert "research_readiness_score" in output["features"][0].values
 
 
 class _MarketOnlyProvider(MarketDataProvider):
@@ -144,6 +146,64 @@ def test_research_engine_allows_historical_canonical_snapshots() -> None:
     assert output["quality_flags"]["snapshot"]["passed"] is True
     assert output["quality_flags"]["freshness"]["passed"] is True
     assert output["quality_flags"]["freshness"]["warnings"]
+
+
+class _TwoSymbolCountingProvider(_MarketOnlyProvider):
+    def __init__(self) -> None:
+        self.calls: dict[str, int] = {}
+
+    def get_universe(self) -> list[str]:
+        return ["AAA", "BBB"]
+
+    def get_historical(self, symbol: str, interval: str, start: date, end: date) -> list[dict]:
+        self.calls[symbol] = self.calls.get(symbol, 0) + 1
+        return [
+            {
+                "date": date(2026, 1, day).isoformat(),
+                "open": 100.0 + day,
+                "high": 101.0 + day,
+                "low": 99.0 + day,
+                "close": 100.0 + day,
+                "volume": 1_000_000 + day,
+            }
+            for day in range(1, 31)
+        ]
+
+    def get_snapshots(self, symbols: Sequence[str]) -> list[StockSnapshot]:
+        return [
+            StockSnapshot(
+                symbol=symbol,
+                as_of=date(2026, 1, 30),
+                sector="IT",
+                close=130.0,
+                volume=1_000_000.0,
+                delivery_ratio=0.5,
+                pe_ratio=20.0,
+                roe=0.15,
+                debt_to_equity=0.2,
+                earnings_growth=0.1,
+                free_cash_flow_margin=0.1,
+                promoter_holding_change=0.0,
+                insider_activity_score=0.0,
+            )
+            for symbol in symbols
+        ]
+
+
+def test_research_engine_reuses_index_history_per_date_window() -> None:
+    settings = load_settings()
+    market = _TwoSymbolCountingProvider()
+    engine = ResearchEngine(
+        settings=settings,
+        market_data=market,
+        text_data=MockTextEventProvider(),
+    )
+
+    engine.run(regime_score=0.0)
+
+    assert market.calls["^NSEI"] == 1
+    assert market.calls["AAA"] == 1
+    assert market.calls["BBB"] == 1
 
 
 def test_research_engine_uses_canonical_financial_statements(tmp_path) -> None:

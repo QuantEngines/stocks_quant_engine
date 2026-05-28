@@ -21,6 +21,7 @@ class FeatureSettings:
     include_sentiment: bool
     include_event_signals: bool
     include_regime_features: bool
+    include_cross_sectional_features: bool
     min_liquidity_threshold: float
 
 
@@ -172,6 +173,11 @@ class DataEntitlementRegistrySettings:
 
 
 @dataclass(frozen=True)
+class CoverageGateSettings:
+    profiles: dict[str, dict[str, float]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class RegimeSwitchingSettings:
     enabled: bool = True
     bull_threshold: float = 0.25
@@ -241,6 +247,7 @@ class AppSettings:
     documents: DocumentProcessingSettings = DocumentProcessingSettings()
     output: OutputSettings = OutputSettings()
     data_entitlements: DataEntitlementRegistrySettings = DataEntitlementRegistrySettings()
+    coverage_gates: CoverageGateSettings = CoverageGateSettings()
 
 
 def _to_bool(text: str | None, default: bool) -> bool:
@@ -271,6 +278,7 @@ def load_settings(config_path: str | None = None) -> AppSettings:
     documents_raw = raw.get("documents", {})
     output_raw = raw.get("output", {})
     data_entitlements_raw = raw.get("data_entitlements", {})
+    coverage_gates_raw = raw.get("coverage_gates", {})
     scoring_raw = raw.get("scoring", {})
 
     zerodha_raw = integrations_raw.get("zerodha", {})
@@ -293,6 +301,10 @@ def load_settings(config_path: str | None = None) -> AppSettings:
             ),
             include_regime_features=_to_bool(
                 os.getenv("SSE_INCLUDE_REGIME_FEATURES"), features_raw.get("include_regime_features", True)
+            ),
+            include_cross_sectional_features=_to_bool(
+                os.getenv("SSE_INCLUDE_CROSS_SECTIONAL_FEATURES"),
+                features_raw.get("include_cross_sectional_features", True),
             ),
             min_liquidity_threshold=float(
                 os.getenv("SSE_MIN_LIQUIDITY", str(features_raw.get("min_liquidity_threshold", 1_000_000)))
@@ -397,6 +409,7 @@ def load_settings(config_path: str | None = None) -> AppSettings:
             ),
         ),
         data_entitlements=_parse_data_entitlements(data_entitlements_raw),
+        coverage_gates=_parse_coverage_gates(coverage_gates_raw),
     )
 
 
@@ -557,6 +570,24 @@ def _parse_data_entitlements(raw: object) -> DataEntitlementRegistrySettings:
             )
         )
     return DataEntitlementRegistrySettings(sources=sources)
+
+
+def _parse_coverage_gates(raw: object) -> CoverageGateSettings:
+    if not isinstance(raw, dict):
+        return CoverageGateSettings()
+    profiles_raw = raw.get("profiles", {})
+    if not isinstance(profiles_raw, dict):
+        return CoverageGateSettings()
+    profiles: dict[str, dict[str, float]] = {}
+    for profile_name, profile in profiles_raw.items():
+        if not isinstance(profile, dict):
+            continue
+        profiles[str(profile_name).strip().lower().replace("-", "_")] = {
+            str(domain).strip().lower().replace("-", "_"): float(threshold)
+            for domain, threshold in profile.items()
+            if threshold is not None
+        }
+    return CoverageGateSettings(profiles=profiles)
 
 
 def _parse_string_list(value: object) -> list[str]:

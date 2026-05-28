@@ -163,6 +163,32 @@ def test_swing_catalyst_component_is_split_not_double_counted() -> None:
     assert sum(components.values()) <= 100.0
 
 
+def test_cross_sectional_context_lifts_research_scores() -> None:
+    base = _rich_fv()
+    enriched = FeatureVector(
+        symbol=base.symbol,
+        as_of=base.as_of,
+        values={
+            **base.values,
+            "cross_sectional_momentum_rank": 1.0,
+            "sector_relative_momentum_rank": 1.0,
+            "cross_sectional_quality_rank": 1.0,
+            "sector_relative_quality_rank": 1.0,
+            "cross_sectional_value_rank": 1.0,
+            "quality_value_composite": 1.0,
+            "liquidity_percentile": 1.0,
+            "feature_coverage_score": 1.0,
+        },
+    )
+
+    base_card = build_score_card(base, LongTermScorer(), SwingScorer(), RiskPenaltyScorer())
+    enriched_card = build_score_card(enriched, LongTermScorer(), SwingScorer(), RiskPenaltyScorer())
+
+    assert enriched_card.long_term_score > base_card.long_term_score
+    assert enriched_card.swing_score > base_card.swing_score
+    assert enriched_card.component_scores["conviction_data_completeness"] >= base_card.component_scores["conviction_data_completeness"]
+
+
 def test_from_dict_weights() -> None:
     weights = LongTermWeights.from_dict({"growth_quality": 25.0})
     assert weights.growth_quality == 25.0

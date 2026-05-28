@@ -29,6 +29,7 @@ from stock_screener_engine.core.conviction_evidence import (
     quality_confidence_features,
     symbol_source_features,
 )
+from stock_screener_engine.core.cross_sectional_features import CrossSectionalFeatureEnricher
 from stock_screener_engine.core.features import FeatureEngine
 from stock_screener_engine.core.ml_ranking import LinearRankModel
 from stock_screener_engine.core.regime_detection import RegimeDetector, RegimeThresholds
@@ -152,6 +153,7 @@ class ResearchEngine:
         )
         self.valuation_normalizer = RollingSectorValuationNormalizer()
         self.text_feature_integration = TextFeatureIntegration()
+        self.cross_sectional_enricher = CrossSectionalFeatureEnricher()
         self.portfolio_adapter = PortfolioConstructionAdapter()
         self.quality = DataQualityChecker()
 
@@ -628,13 +630,22 @@ class ResearchEngine:
             text_feature_rows.append({"symbol": symbol, **fmap})
 
         vectors: list[FeatureVector] = []
+        index_bars_cache: dict[tuple[date, date], list[dict]] = {}
         for snap in snapshots:
             sentiment = self.text_data.get_sentiment_score(snap.symbol)
             event_signal = 0.2 if events.get(snap.symbol) else 0.0
             end = snap.as_of
             start = end - timedelta(days=140)
             bars = self.market_data.get_historical(snap.symbol, interval="1d", start=start, end=end)
-            index_bars = self.market_data.get_historical("^NSEI", interval="1d", start=start, end=end)
+            index_key = (start, end)
+            if index_key not in index_bars_cache:
+                index_bars_cache[index_key] = self.market_data.get_historical(
+                    "^NSEI",
+                    interval="1d",
+                    start=start,
+                    end=end,
+                )
+            index_bars = index_bars_cache[index_key]
 
             market = MarketSnapshot(
                 symbol=snap.symbol,
@@ -675,6 +686,8 @@ class ResearchEngine:
                 banking_record=banking_map.get(snap.symbol),
             )
             vectors.append(vector)
+        if self.settings.features.include_cross_sectional_features:
+            vectors = self.cross_sectional_enricher.enrich(vectors, sector_by_symbol=sector_map)
         return vectors, sector_map, text_feature_rows
 
     def _auto_tuned_weight_priors(

@@ -143,6 +143,20 @@ class PeerContextMetrics:
 
 
 @dataclass(frozen=True)
+class CrossSectionalMetrics:
+    universe_momentum_rank: float | None = None
+    sector_momentum_rank: float | None = None
+    universe_quality_rank: float | None = None
+    sector_quality_rank: float | None = None
+    universe_value_rank: float | None = None
+    quality_value_composite: float | None = None
+    liquidity_percentile: float | None = None
+    feature_coverage_score: float | None = None
+    sector_feature_coverage_score: float | None = None
+    research_readiness_score: float | None = None
+
+
+@dataclass(frozen=True)
 class SignalExplanationBlock:
     top_positive_drivers: list[str] = field(default_factory=list)
     top_negative_drivers: list[str] = field(default_factory=list)
@@ -166,6 +180,7 @@ class ProfessionalSignalReport:
     risk: RiskMetrics
     conviction: ConvictionMetrics
     peer_context: PeerContextMetrics
+    cross_sectional: CrossSectionalMetrics
     explanation: SignalExplanationBlock
     as_of: date
 
@@ -314,6 +329,18 @@ def build_signal_report(
             valuation_position=_valuation_position(values),
             valuation_note=_valuation_note(values),
         ),
+        cross_sectional=CrossSectionalMetrics(
+            universe_momentum_rank=_get(values, "cross_sectional_momentum_rank"),
+            sector_momentum_rank=_get(values, "sector_relative_momentum_rank"),
+            universe_quality_rank=_get(values, "cross_sectional_quality_rank"),
+            sector_quality_rank=_get(values, "sector_relative_quality_rank"),
+            universe_value_rank=_get(values, "cross_sectional_value_rank"),
+            quality_value_composite=_get(values, "quality_value_composite"),
+            liquidity_percentile=_get(values, "liquidity_percentile"),
+            feature_coverage_score=_get(values, "feature_coverage_score"),
+            sector_feature_coverage_score=_get(values, "sector_feature_coverage_score"),
+            research_readiness_score=_get(values, "research_readiness_score"),
+        ),
         explanation=SignalExplanationBlock(
             top_positive_drivers=list(explanation.top_positive_drivers),
             top_negative_drivers=list(explanation.top_negative_drivers),
@@ -334,6 +361,7 @@ def render_signal_markdown(report: ProfessionalSignalReport) -> str:
     conviction = report.conviction
     banking = report.banking
     peer_context = report.peer_context
+    cross_sectional = report.cross_sectional
     explanation = report.explanation
     lines = [
         f"# {ident.symbol} Signal Report",
@@ -346,6 +374,11 @@ def render_signal_markdown(report: ProfessionalSignalReport) -> str:
         "## Conviction",
         f"Score strength: {conviction.score_strength} | Agreement: {conviction.signal_agreement} | Data: {conviction.data_completeness}",
         f"Source: {conviction.source_confidence} | Backtest: {conviction.backtest_evidence} | Risk resilience: {conviction.risk_resilience}",
+        "",
+        "## Cross-Sectional Context",
+        f"Momentum rank: {cross_sectional.universe_momentum_rank} | Sector momentum rank: {cross_sectional.sector_momentum_rank}",
+        f"Quality rank: {cross_sectional.universe_quality_rank} | Value rank: {cross_sectional.universe_value_rank}",
+        f"Research readiness: {cross_sectional.research_readiness_score} | Feature coverage: {cross_sectional.feature_coverage_score}",
         "",
     ]
     if banking.applicable:
@@ -396,6 +429,10 @@ def signal_reports_to_console_rows(reports: Iterable[ProfessionalSignalReport]) 
                 "risk": report.summary.risk_penalty,
                 "confidence": report.summary.confidence,
                 "liquidity": report.identity.liquidity_classification,
+                "readiness": report.cross_sectional.research_readiness_score,
+                "momentum_rank": report.cross_sectional.universe_momentum_rank,
+                "sector_momentum_rank": report.cross_sectional.sector_momentum_rank,
+                "quality_value": report.cross_sectional.quality_value_composite,
                 "banking_coverage": report.banking.metric_coverage,
                 "banking_quality": report.banking.banking_quality_score,
             }
@@ -572,6 +609,10 @@ def _missing_data_warnings(values: Mapping[str, float]) -> list[str]:
         warnings.append("Document/NLP event metrics unavailable or all-zero.")
     if "trend_strength" not in values or "momentum_strength" not in values:
         warnings.append("Technical feature coverage incomplete.")
+    if float(values.get("feature_coverage_score", 1.0)) < 0.50:
+        warnings.append("Overall feature coverage is below institutional-readiness threshold.")
+    if float(values.get("research_readiness_score", 1.0)) < 0.45:
+        warnings.append("Research readiness is weak; treat signal as exploratory until data coverage improves.")
     if float(values.get("banking_sector_applicable", 0.0)) >= 0.5:
         if float(values.get("banking_factor_available", 0.0)) < 0.5:
             warnings.append("Bank/NBFC-specific factors unavailable; confidence is discounted.")
@@ -603,6 +644,8 @@ def _risk_monitorables(risk_flags: Iterable[str], values: Mapping[str, float]) -
         out.append("Debt metrics or interest coverage deteriorate.")
     if float(values.get("valuation_sanity", 0.5)) < 0.25:
         out.append("Valuation remains stretched versus history or sector.")
+    if float(values.get("research_readiness_score", 0.5)) < 0.45:
+        out.append("Insufficient research-readiness support from coverage, liquidity, and peer context.")
     if not out:
         out.append("Main risk is ordinary thesis drift: price trend, earnings, or event context weakens.")
     return out
@@ -616,6 +659,10 @@ def _monitorables(values: Mapping[str, float], risk_flags: Iterable[str]) -> lis
     ]
     if float(values.get("uncertainty_penalty", 0.0)) > 0.3:
         monitor.append("Uncertainty in management commentary and filings")
+    if float(values.get("cross_sectional_momentum_rank", 0.5)) < 0.35:
+        monitor.append("Relative momentum rank versus covered universe")
+    if float(values.get("feature_coverage_score", 1.0)) < 0.65:
+        monitor.append("Coverage gaps in financial, valuation, event, or sector context")
     if "leverage_risk" in set(risk_flags):
         monitor.append("Debt reduction, refinancing cost, and interest coverage")
     if float(values.get("banking_sector_applicable", 0.0)) >= 0.5:

@@ -45,13 +45,24 @@ class SwingTradeScorer:
     def _trend(self, fa: FeatureAccessor) -> CategoryScore:
         trend = clamp(fa.get("trend_strength", 0.0))
         rel = clamp(fa.get("relative_strength_proxy", 0.0))
-        score = clamp(0.7 * trend + 0.3 * rel)
+        universe_rank = clamp(fa.get("cross_sectional_momentum_rank", 0.0))
+        sector_rank = clamp(fa.get("sector_relative_momentum_rank", 0.0))
+        score = clamp(0.55 * trend + 0.20 * rel + 0.15 * universe_rank + 0.10 * sector_rank)
         return CategoryScore(
             name="trend",
             score_0_1=score,
             weight=self.weights.trend,
             contribution=score * self.weights.trend,
-            missing_features=[k for k in ["trend_strength", "relative_strength_proxy"] if k in fa.missing],
+            missing_features=[
+                k
+                for k in [
+                    "trend_strength",
+                    "relative_strength_proxy",
+                    "cross_sectional_momentum_rank",
+                    "sector_relative_momentum_rank",
+                ]
+                if k in fa.missing
+            ],
         )
 
     def _momentum(self, fa: FeatureAccessor) -> CategoryScore:
@@ -93,13 +104,18 @@ class SwingTradeScorer:
         trend = clamp(fa.get("trend_strength", 0.0))
         compression = linear_score(fa.get("compression_score", 0.0), 0.2, 0.9)
         breakout = linear_score(fa.get("breakout_score", 0.0), 0.2, 0.9)
-        score = clamp(0.4 * trend + 0.3 * compression + 0.3 * breakout)
+        liquidity_rank = clamp(fa.get("liquidity_percentile", 0.0))
+        score = clamp(0.35 * trend + 0.25 * compression + 0.25 * breakout + 0.15 * liquidity_rank)
         return CategoryScore(
             name="setup_quality",
             score_0_1=score,
             weight=self.weights.setup_quality,
             contribution=score * self.weights.setup_quality,
-            missing_features=[k for k in ["trend_strength", "compression_score", "breakout_score"] if k in fa.missing],
+            missing_features=[
+                k
+                for k in ["trend_strength", "compression_score", "breakout_score", "liquidity_percentile"]
+                if k in fa.missing
+            ],
         )
 
     def _catalyst_awareness(self, fa: FeatureAccessor) -> CategoryScore:

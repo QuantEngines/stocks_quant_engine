@@ -44,7 +44,12 @@ _EVENT_NLP_KEYS = (
     "uncertainty_penalty",
     "transcript_quality_signal",
 )
-_REGIME_KEYS = ("market_regime_score", "sector_momentum")
+_REGIME_KEYS = (
+    "market_regime_score",
+    "sector_momentum",
+    "cross_sectional_momentum_rank",
+    "sector_relative_momentum_rank",
+)
 
 _SOURCE_CONFIDENCE_KEYS = (
     "source_confidence",
@@ -167,6 +172,9 @@ class ConvictionScorer:
             + 0.15 * event_nlp
             + 0.10 * regime
         )
+        explicit_coverage = _bounded_feature(values, "feature_coverage_score")
+        if explicit_coverage is not None:
+            completeness = 0.70 * completeness + 0.30 * explicit_coverage
         return _clamp_0_100(completeness * 100.0)
 
     def _source_confidence(self, values: Mapping[str, float]) -> float:
@@ -195,7 +203,13 @@ class ConvictionScorer:
     def _sector_regime_confirmation(self, values: Mapping[str, float]) -> float:
         regime = _signed_feature_to_confirmation(values, "market_regime_score")
         sector = _signed_feature_to_confirmation(values, "sector_momentum")
-        return _clamp_0_100((0.40 * regime + 0.60 * sector) * 100.0)
+        universe_rank = _bounded_feature(values, "cross_sectional_momentum_rank")
+        sector_rank = _bounded_feature(values, "sector_relative_momentum_rank")
+        universe_rank = 0.5 if universe_rank is None else universe_rank
+        sector_rank = 0.5 if sector_rank is None else sector_rank
+        return _clamp_0_100(
+            (0.25 * regime + 0.30 * sector + 0.20 * universe_rank + 0.25 * sector_rank) * 100.0
+        )
 
     def _risk_resilience(self, risk_penalty: float) -> float:
         max_penalty = max(1e-9, float(self.max_risk_penalty))

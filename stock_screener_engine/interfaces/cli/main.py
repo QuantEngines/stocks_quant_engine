@@ -16,7 +16,9 @@ from stock_screener_engine.app import (
     run_data_foundation,
     run_data_entitlements,
     run_data_quality,
+    run_data_readiness,
     run_data_source_coverage,
+    run_data_source_priority,
     run_deepdive_report,
     run_document_ingest,
     run_engine_backtest,
@@ -25,6 +27,7 @@ from stock_screener_engine.app import (
     run_factor_template,
     run_finedge_factor_export,
     run_finedge_inspect,
+    run_finedge_onboarding_plan,
     run_finedge_probe,
     run_fmp_probe,
     run_financials_ingest,
@@ -55,6 +58,12 @@ def main(argv: list[str] | None = None) -> None:
     scan = subparsers.add_parser("scan", help="Run stock signal scan")
     scan.add_argument("--mode", choices=["daily", "swing", "full"], default="full")
     scan.add_argument("--format", choices=["json", "table", "markdown"], default="json")
+    scan.add_argument("--symbols", default="", help="Comma-separated symbol override")
+    scan.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
+    scan.add_argument("--readiness-check", choices=["off", "warn", "enforce"], default="warn")
+    scan.add_argument("--readiness-start", default=None, help="Readiness start date YYYY-MM-DD")
+    scan.add_argument("--readiness-end", default=None, help="Readiness/as-of date YYYY-MM-DD")
+    scan.add_argument("--readiness-lookback-years", type=int, default=5)
     _add_source_arg(scan)
 
     analyze = subparsers.add_parser("analyze", help="Run single-stock analysis")
@@ -119,6 +128,26 @@ def main(argv: list[str] | None = None) -> None:
     source_coverage.add_argument("--venue", default=None)
     source_coverage.add_argument("--interval", default="1d")
     source_coverage.add_argument("--format", choices=["json", "table", "markdown"], default="markdown")
+
+    source_priority = subparsers.add_parser(
+        "data-source-priority",
+        help="Show canonical source priority by data domain",
+    )
+    source_priority.add_argument("--format", choices=["json", "table", "markdown"], default="markdown")
+
+    data_readiness = subparsers.add_parser(
+        "data-readiness",
+        help="Evaluate hard data-coverage gates for scans, research, and backtests",
+    )
+    data_readiness.add_argument("--start", default=None, help="Start date YYYY-MM-DD")
+    data_readiness.add_argument("--end", default=None, help="End/as-of date YYYY-MM-DD; defaults to today")
+    data_readiness.add_argument("--lookback-years", type=int, default=5, help="Compute start date from end date")
+    data_readiness.add_argument("--mode", default="long-term-scan", help="swing-scan, long-term-scan, deep-research, or backtest")
+    data_readiness.add_argument("--symbols", default="", help="Comma-separated symbol override")
+    data_readiness.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
+    data_readiness.add_argument("--venue", default=None)
+    data_readiness.add_argument("--interval", default="1d")
+    data_readiness.add_argument("--format", choices=["json", "table", "markdown"], default="markdown")
 
     data_entitlements = subparsers.add_parser(
         "data-entitlements",
@@ -210,7 +239,8 @@ def main(argv: list[str] | None = None) -> None:
         "finedge-probe",
         help="Probe FinEdge coverage for Indian fundamentals, ownership, prices, and events",
     )
-    finedge_probe.add_argument("--symbols", required=True, help="Comma-separated symbols")
+    finedge_probe.add_argument("--symbols", default="", help="Comma-separated symbols")
+    finedge_probe.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
     finedge_probe.add_argument(
         "--check",
         default="smoke",
@@ -245,7 +275,8 @@ def main(argv: list[str] | None = None) -> None:
         "finedge-inspect",
         help="Inspect sanitized FinEdge response schemas for field mapping",
     )
-    finedge_inspect.add_argument("--symbols", required=True, help="Comma-separated symbols")
+    finedge_inspect.add_argument("--symbols", default="", help="Comma-separated symbols")
+    finedge_inspect.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
     finedge_inspect.add_argument(
         "--check",
         default="fundamentals",
@@ -277,7 +308,8 @@ def main(argv: list[str] | None = None) -> None:
         "finedge-factor-export",
         help="Export FinEdge financials and ownership into reviewable factor CSVs",
     )
-    finedge_factor_export.add_argument("--symbols", required=True, help="Comma-separated symbols")
+    finedge_factor_export.add_argument("--symbols", default="", help="Comma-separated symbols")
+    finedge_factor_export.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
     finedge_factor_export.add_argument("--output-root", required=True, help="External/ignored output folder for factor CSVs")
     finedge_factor_export.add_argument("--as-of", required=True, help="Point-in-time cutoff date YYYY-MM-DD")
     finedge_factor_export.add_argument("--sections", default="financials,valuations,shareholding", help="financials,valuations,shareholding,banking,all")
@@ -291,6 +323,20 @@ def main(argv: list[str] | None = None) -> None:
     finedge_factor_export.add_argument("--period", default="annual")
     finedge_factor_export.add_argument("--shareholding-period", default="quarterly")
     finedge_factor_export.add_argument("--format", choices=["json", "table"], default="json")
+
+    finedge_onboarding = subparsers.add_parser(
+        "finedge-onboarding-plan",
+        help="Create a local paid-FinEdge onboarding checklist and post-subscription command sequence",
+    )
+    finedge_onboarding.add_argument("--start", default=None, help="Start date YYYY-MM-DD")
+    finedge_onboarding.add_argument("--end", default=None, help="End/as-of date YYYY-MM-DD; defaults to today")
+    finedge_onboarding.add_argument("--lookback-years", type=int, default=5, help="Compute start date from end date")
+    finedge_onboarding.add_argument("--symbols", default="", help="Comma-separated symbol override")
+    finedge_onboarding.add_argument("--universe-file", default=None, help="External CSV/plain-text universe file")
+    finedge_onboarding.add_argument("--venue", default=None)
+    finedge_onboarding.add_argument("--interval", default="1d")
+    finedge_onboarding.add_argument("--factor-root", default=None, help="External/ignored factor root used in generated commands")
+    finedge_onboarding.add_argument("--format", choices=["json", "table", "markdown"], default="markdown")
 
     readiness = subparsers.add_parser("backtest-readiness", help="Check if canonical data is backtest-ready")
     readiness.add_argument("--start", default=None, help="Start date YYYY-MM-DD")
@@ -424,7 +470,16 @@ def main(argv: list[str] | None = None) -> None:
     _apply_source_override(getattr(args, "source", None))
 
     if args.command == "scan":
-        result = run_screen(config_path=config_path)
+        result = run_screen(
+            config_path=config_path,
+            scan_mode=args.mode,
+            symbols=_parse_symbols(args.symbols),
+            universe_file=args.universe_file,
+            readiness_check=args.readiness_check,
+            readiness_as_of=date.fromisoformat(args.readiness_end) if args.readiness_end else None,
+            readiness_start=date.fromisoformat(args.readiness_start) if args.readiness_start else None,
+            readiness_lookback_years=args.readiness_lookback_years,
+        )
         payload = _scan_payload(result, mode=args.mode, fmt=args.format)
         _emit(payload, fmt=args.format)
         return
@@ -544,6 +599,26 @@ def main(argv: list[str] | None = None) -> None:
         _emit(_data_source_coverage_payload(result, args.format), fmt=args.format)
         return
 
+    if args.command == "data-source-priority":
+        result = run_data_source_priority(config_path=config_path)
+        _emit(_data_source_priority_payload(result, args.format), fmt=args.format)
+        return
+
+    if args.command == "data-readiness":
+        start, end = _resolve_date_range(args, parser)
+        result = run_data_readiness(
+            as_of=end,
+            start=start,
+            mode=args.mode,
+            symbols=_parse_symbols(args.symbols),
+            config_path=config_path,
+            interval=args.interval,
+            universe_file=args.universe_file,
+            venue=args.venue,
+        )
+        _emit(_data_readiness_payload(result, args.format), fmt=args.format)
+        return
+
     if args.command == "data-entitlements":
         result = run_data_entitlements(
             symbols=_parse_symbols(args.symbols),
@@ -630,6 +705,7 @@ def main(argv: list[str] | None = None) -> None:
             symbols=_parse_symbols(args.symbols) or [],
             checks=_parse_csv(args.check),
             config_path=config_path,
+            universe_file=args.universe_file,
             base_url=args.base_url,
             api_key_env=args.api_key_env,
             timeout_seconds=args.timeout_seconds,
@@ -653,6 +729,7 @@ def main(argv: list[str] | None = None) -> None:
             symbols=_parse_symbols(args.symbols) or [],
             checks=_parse_csv(args.check),
             config_path=config_path,
+            universe_file=args.universe_file,
             base_url=args.base_url,
             api_key_env=args.api_key_env,
             timeout_seconds=args.timeout_seconds,
@@ -680,6 +757,7 @@ def main(argv: list[str] | None = None) -> None:
             output_root=args.output_root,
             as_of=date.fromisoformat(args.as_of),
             config_path=config_path,
+            universe_file=args.universe_file,
             base_url=args.base_url,
             api_key_env=args.api_key_env,
             timeout_seconds=args.timeout_seconds,
@@ -692,6 +770,21 @@ def main(argv: list[str] | None = None) -> None:
             sections=_parse_csv(args.sections),
         )
         _emit(_finedge_factor_export_payload(result, args.format), fmt=args.format)
+        return
+
+    if args.command == "finedge-onboarding-plan":
+        start, end = _resolve_date_range(args, parser)
+        result = run_finedge_onboarding_plan(
+            as_of=end,
+            start=start,
+            symbols=_parse_symbols(args.symbols),
+            config_path=config_path,
+            interval=args.interval,
+            universe_file=args.universe_file,
+            venue=args.venue,
+            factor_root=args.factor_root,
+        )
+        _emit(_finedge_onboarding_payload(result, args.format), fmt=args.format)
         return
 
     if args.command == "backtest-readiness":
@@ -900,17 +993,47 @@ def _scan_payload(result: dict[str, object], mode: str, fmt: str) -> object:
         if not isinstance(rows, dict):
             return []
         if mode == "daily":
-            return rows.get("long_term", [])
+            payload: object = rows.get("long_term", [])
+            return _with_scan_readiness_if_needed(result, payload)
         if mode == "swing":
-            return rows.get("swing", [])
-        return {"long_term": rows.get("long_term", []), "swing": rows.get("swing", [])}
+            payload = rows.get("swing", [])
+            return _with_scan_readiness_if_needed(result, payload)
+        payload = {"long_term": rows.get("long_term", []), "swing": rows.get("swing", [])}
+        return _with_scan_readiness_if_needed(result, payload)
     if fmt == "markdown":
         reports = result.get("professional_signal_reports", {})
         if isinstance(reports, dict):
+            readiness = _scan_readiness_markdown(result)
             if mode == "swing":
-                return reports.get("markdown_top_swing", "")
-            return reports.get("markdown_top_long", "")
+                markdown = str(reports.get("markdown_top_swing", ""))
+            else:
+                markdown = str(reports.get("markdown_top_long", ""))
+            return (readiness + "\n" + markdown).strip() + "\n" if readiness else markdown
     return result
+
+
+def _with_scan_readiness_if_needed(result: Mapping[str, object], payload: object) -> object:
+    readiness = result.get("data_readiness")
+    if not isinstance(readiness, Mapping):
+        return payload
+    if readiness.get("decision") == "pass" and not result.get("scan_blocked"):
+        return payload
+    rows = readiness.get("console_rows")
+    return {
+        "scan_blocked": bool(result.get("scan_blocked")),
+        "data_readiness": rows if isinstance(rows, list) else [],
+        "signals": payload,
+    }
+
+
+def _scan_readiness_markdown(result: Mapping[str, object]) -> str:
+    readiness = result.get("data_readiness")
+    if not isinstance(readiness, Mapping):
+        return ""
+    if readiness.get("decision") == "pass" and not result.get("scan_blocked"):
+        return ""
+    markdown = readiness.get("markdown")
+    return str(markdown).strip() if isinstance(markdown, str) else ""
 
 
 def _broker_health_payload(result: dict[str, object], fmt: str) -> object:
@@ -949,6 +1072,26 @@ def _data_source_coverage_payload(result: dict[str, object], fmt: str) -> object
     return result
 
 
+def _data_source_priority_payload(result: dict[str, object], fmt: str) -> object:
+    if fmt == "markdown":
+        markdown = result.get("markdown")
+        return markdown if isinstance(markdown, str) else ""
+    if fmt == "table":
+        rows = result.get("rows")
+        return rows if isinstance(rows, list) else []
+    return result
+
+
+def _data_readiness_payload(result: dict[str, object], fmt: str) -> object:
+    if fmt == "markdown":
+        markdown = result.get("markdown")
+        return markdown if isinstance(markdown, str) else ""
+    if fmt == "table":
+        rows = result.get("console_rows")
+        return rows if isinstance(rows, list) else []
+    return result
+
+
 def _data_entitlements_payload(result: dict[str, object], fmt: str) -> object:
     if fmt == "markdown":
         markdown = result.get("markdown")
@@ -974,6 +1117,16 @@ def _data_entitlements_payload(result: dict[str, object], fmt: str) -> object:
                 }
             )
         return out
+    return result
+
+
+def _finedge_onboarding_payload(result: dict[str, object], fmt: str) -> object:
+    if fmt == "markdown":
+        markdown = result.get("markdown")
+        return markdown if isinstance(markdown, str) else ""
+    if fmt == "table":
+        rows = result.get("target_domains")
+        return rows if isinstance(rows, list) else []
     return result
 
 

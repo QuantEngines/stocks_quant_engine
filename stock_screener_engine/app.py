@@ -47,6 +47,10 @@ from stock_screener_engine.pipelines.backtest_readiness import (
     BacktestReadinessThresholds,
 )
 from stock_screener_engine.pipelines.backtest_dataset import BacktestDatasetPipeline
+from stock_screener_engine.pipelines.coverage_gates import (
+    FinEdgeOnboardingPlanner,
+    build_data_readiness_report,
+)
 from stock_screener_engine.pipelines.daily_batch import DailyBatchPipeline
 from stock_screener_engine.pipelines.data_source_coverage import (
     DataSourceCoverageReporter,
@@ -59,6 +63,7 @@ from stock_screener_engine.pipelines.factor_bootstrap import FactorBootstrapPipe
 from stock_screener_engine.pipelines.factor_qa import CanonicalFactorQAReporter
 from stock_screener_engine.pipelines.intraday_update import IntradayUpdatePipeline
 from stock_screener_engine.pipelines.live_invalidation_daily import run_live_invalidation_daily_job
+from stock_screener_engine.pipelines.source_priority import build_source_priority_report
 from stock_screener_engine.reporting.signal_report import (
     build_signal_reports,
     render_signal_markdown,
@@ -455,6 +460,7 @@ def run_finedge_probe(
     symbols: list[str],
     checks: list[str],
     config_path: str | None = None,
+    universe_file: str | None = None,
     base_url: str | None = None,
     api_key_env: str = "SSE_FINEDGE_API_KEY",
     timeout_seconds: int = 8,
@@ -474,12 +480,17 @@ def run_finedge_probe(
     settings = load_settings(config_path=config_path)
     validate_startup_settings(settings)
     configure_logging(settings.log_level)
+    resolved_symbols, _ = _resolve_runtime_universe(
+        settings=settings,
+        symbols=symbols,
+        universe_file=universe_file,
+    )
     api_key, resolved_api_key_env = _resolve_finedge_api_key(api_key_env)
     resolved_base_url = base_url or os.getenv("SSE_FINEDGE_BASE_URL", "https://data.finedgeapi.com")
     normalized_checks = normalize_finedge_checks(checks)
     if not api_key:
         report = _missing_finedge_key_report(
-            symbols=symbols,
+            symbols=resolved_symbols,
             checks=normalized_checks,
             api_key_env=api_key_env,
             base_url=resolved_base_url,
@@ -517,7 +528,7 @@ def run_finedge_probe(
         from_date=from_date,
         to_date=to_date,
         index_symbol=index_symbol,
-    ).run(symbols=symbols, checks=normalized_checks)
+    ).run(symbols=resolved_symbols, checks=normalized_checks)
     report["api_key_env"] = resolved_api_key_env
     report["api_key_configured"] = bool(api_key)
     report["base_url"] = client.base_url
@@ -542,6 +553,7 @@ def run_finedge_inspect(
     symbols: list[str],
     checks: list[str],
     config_path: str | None = None,
+    universe_file: str | None = None,
     base_url: str | None = None,
     api_key_env: str = "SSE_FINEDGE_API_KEY",
     timeout_seconds: int = 8,
@@ -564,12 +576,17 @@ def run_finedge_inspect(
     settings = load_settings(config_path=config_path)
     validate_startup_settings(settings)
     configure_logging(settings.log_level)
+    resolved_symbols, _ = _resolve_runtime_universe(
+        settings=settings,
+        symbols=symbols,
+        universe_file=universe_file,
+    )
     api_key, resolved_api_key_env = _resolve_finedge_api_key(api_key_env)
     resolved_base_url = base_url or os.getenv("SSE_FINEDGE_BASE_URL", "https://data.finedgeapi.com")
     normalized_checks = normalize_finedge_checks(checks)
     if not api_key:
         report = _missing_finedge_key_report(
-            symbols=symbols,
+            symbols=resolved_symbols,
             checks=normalized_checks,
             api_key_env=api_key_env,
             base_url=resolved_base_url,
@@ -616,7 +633,7 @@ def run_finedge_inspect(
         max_depth=max_depth,
         max_fields=max_fields,
         max_list_items=max_list_items,
-    ).run(symbols=symbols, checks=normalized_checks)
+    ).run(symbols=resolved_symbols, checks=normalized_checks)
     report["api_key_env"] = resolved_api_key_env
     report["api_key_configured"] = bool(api_key)
     report["base_url"] = client.base_url
@@ -642,6 +659,7 @@ def run_finedge_factor_export(
     output_root: str,
     as_of: date,
     config_path: str | None = None,
+    universe_file: str | None = None,
     base_url: str | None = None,
     api_key_env: str = "SSE_FINEDGE_API_KEY",
     timeout_seconds: int = 8,
@@ -657,6 +675,11 @@ def run_finedge_factor_export(
     settings = load_settings(config_path=config_path)
     validate_startup_settings(settings)
     configure_logging(settings.log_level)
+    resolved_symbols, _ = _resolve_runtime_universe(
+        settings=settings,
+        symbols=symbols,
+        universe_file=universe_file,
+    )
     api_key, resolved_api_key_env = _resolve_finedge_api_key(api_key_env)
     resolved_base_url = base_url or os.getenv("SSE_FINEDGE_BASE_URL", "https://data.finedgeapi.com")
     canonical_venue = (venue or settings.runtime_data.canonical_venue).strip().upper()
@@ -668,7 +691,7 @@ def run_finedge_factor_export(
             "venue": canonical_venue,
             "source": "finedge",
             "sections": sections or ["financials", "valuations", "shareholding"],
-            "symbols_requested": len(symbols),
+            "symbols_requested": len(resolved_symbols),
             "output_root": output_root,
             "passed": False,
             "row_counts": {"financials": 0, "valuations": 0, "shareholding": 0, "banking": 0, "ownership_details": 0},
@@ -694,7 +717,7 @@ def run_finedge_factor_export(
         shareholding_period=shareholding_period,
     )
     report = mapper.export(
-        symbols=symbols,
+        symbols=resolved_symbols,
         as_of=as_of,
         output_root=output_root,
         sections=sections or ["financials", "valuations", "shareholding"],
@@ -869,11 +892,50 @@ def _security_master_symbol_names(settings: AppSettings, symbols: Sequence[str])
     }
 
 
-def run_screen(config_path: str | None = None) -> dict[str, object]:
+def run_screen(
+    config_path: str | None = None,
+    scan_mode: str = "full",
+    symbols: list[str] | None = None,
+    universe_file: str | None = None,
+    readiness_check: str = "warn",
+    readiness_as_of: date | None = None,
+    readiness_start: date | None = None,
+    readiness_lookback_years: int = 5,
+) -> dict[str, object]:
     """Run the full market screening pass (daily + intraday) and return ranked signals."""
     settings = load_settings(config_path=config_path)
     validate_startup_settings(settings)
     configure_logging(settings.log_level)
+    resolved_symbols, _ = _resolve_runtime_universe(
+        settings=settings,
+        symbols=symbols,
+        universe_file=universe_file,
+    )
+    if symbols or universe_file:
+        settings = replace(
+            settings,
+            runtime_data=replace(settings.runtime_data, market_universe=resolved_symbols),
+        )
+
+    normalized_scan_mode = scan_mode.strip().lower()
+    normalized_readiness = readiness_check.strip().lower().replace("-", "_")
+    data_readiness = None
+    if normalized_readiness not in {"off", "none", "skip"}:
+        data_readiness = _build_scan_readiness_report(
+            settings=settings,
+            symbols=resolved_symbols,
+            scan_mode=normalized_scan_mode,
+            as_of=readiness_as_of,
+            start=readiness_start,
+            lookback_years=readiness_lookback_years,
+        )
+        if normalized_readiness in {"enforce", "block"} and not bool(data_readiness.get("passed")):
+            return _blocked_scan_payload(
+                settings=settings,
+                symbols=resolved_symbols,
+                scan_mode=normalized_scan_mode,
+                data_readiness=data_readiness,
+            )
 
     daily = run_daily(settings)
     intraday = run_intraday(settings)
@@ -905,6 +967,10 @@ def run_screen(config_path: str | None = None) -> dict[str, object]:
     sector_reports = SectorIntelligenceBuilder().build_from_engine_output(daily)
 
     return {
+        "source": settings.runtime_data.market_provider,
+        "scan_mode": normalized_scan_mode,
+        "scan_blocked": False,
+        "data_readiness": data_readiness,
         "broker_enabled": brokers,
         "daily_top_long": [
             {
@@ -975,6 +1041,74 @@ def run_screen(config_path: str | None = None) -> dict[str, object]:
 
 # Keep the old name as an alias so existing tests and scripts don't break.
 run_demo = run_screen
+
+
+def _build_scan_readiness_report(
+    *,
+    settings: AppSettings,
+    symbols: Sequence[str],
+    scan_mode: str,
+    as_of: date | None,
+    start: date | None,
+    lookback_years: int,
+) -> dict[str, object]:
+    report_as_of = as_of or date.today()
+    report_start = start or (report_as_of - timedelta(days=max(1, lookback_years) * 365))
+    readiness_mode = "swing_scan" if scan_mode == "swing" else "long_term_scan"
+    store = MarketDataStore(settings.storage.sqlite_path)
+    file_store = LocalFileStorage(settings.storage.root_dir)
+    try:
+        coverage = DataSourceCoverageReporter(
+            store=store,
+            file_store=file_store,
+            venue=settings.runtime_data.canonical_venue,
+            entitlements=settings.data_entitlements.sources,
+        ).build(
+            symbols=symbols,
+            as_of=report_as_of,
+            start=report_start,
+            interval="1d",
+        )
+    finally:
+        store.close()
+
+    report = build_data_readiness_report(
+        coverage_report=coverage,
+        mode=readiness_mode,
+        profiles=settings.coverage_gates.profiles or None,
+    )
+    report["check_scope"] = "scan"
+    report["scan_mode"] = scan_mode
+    return report
+
+
+def _blocked_scan_payload(
+    *,
+    settings: AppSettings,
+    symbols: Sequence[str],
+    scan_mode: str,
+    data_readiness: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        "source": settings.runtime_data.market_provider,
+        "scan_mode": scan_mode,
+        "scan_blocked": True,
+        "symbols_requested": len(symbols),
+        "data_readiness": dict(data_readiness),
+        "daily_top_long": [],
+        "daily_top_swing": [],
+        "daily_top_short": [],
+        "intraday_top_swing": [],
+        "professional_signal_reports": {
+            "long_term": [],
+            "swing": [],
+            "console_rows": {"long_term": [], "swing": []},
+            "markdown_top_long": str(data_readiness.get("markdown", "")),
+            "markdown_top_swing": str(data_readiness.get("markdown", "")),
+        },
+        "sector_rankings": [],
+        "recommendation": "Improve data coverage or rerun with --readiness-check warn/off for exploratory diagnostics.",
+    }
 
 
 def run_single_stock(
@@ -1278,6 +1412,112 @@ def run_data_entitlements(
     }
     file_store.save_json(report, filename="data_entitlements_report.json", subdir="quality")
     file_store.save_text(str(report["markdown"]), filename="data_entitlements_report.md", subdir="quality")
+    return report
+
+
+def run_data_source_priority(config_path: str | None = None) -> dict[str, object]:
+    """Report canonical source priority by data domain."""
+    settings = load_settings(config_path=config_path)
+    validate_startup_settings(settings)
+    configure_logging(settings.log_level)
+    report = build_source_priority_report(entitlements=settings.data_entitlements.sources)
+    file_store = LocalFileStorage(settings.storage.root_dir)
+    quality_dir = file_store.root / "quality"
+    report["artifacts"] = {
+        "json": str(quality_dir / "data_source_priority_report.json"),
+        "markdown": str(quality_dir / "data_source_priority_report.md"),
+    }
+    file_store.save_json(report, filename="data_source_priority_report.json", subdir="quality")
+    file_store.save_text(str(report["markdown"]), filename="data_source_priority_report.md", subdir="quality")
+    return report
+
+
+def run_data_readiness(
+    as_of: date,
+    start: date,
+    mode: str = "long_term_scan",
+    symbols: list[str] | None = None,
+    config_path: str | None = None,
+    interval: str = "1d",
+    universe_file: str | None = None,
+    venue: str | None = None,
+) -> dict[str, object]:
+    """Evaluate whether current data coverage is safe for a workflow."""
+    settings = load_settings(config_path=config_path)
+    coverage = run_data_source_coverage(
+        as_of=as_of,
+        start=start,
+        symbols=symbols,
+        config_path=config_path,
+        interval=interval,
+        universe_file=universe_file,
+        venue=venue,
+    )
+    report = build_data_readiness_report(
+        coverage_report=coverage,
+        mode=mode,
+        profiles=settings.coverage_gates.profiles or None,
+    )
+    file_store = LocalFileStorage(settings.storage.root_dir)
+    quality_dir = file_store.root / "quality"
+    normalized_mode = str(report["mode"])
+    report["artifacts"] = {
+        "json": str(quality_dir / f"data_readiness_{normalized_mode}.json"),
+        "markdown": str(quality_dir / f"data_readiness_{normalized_mode}.md"),
+    }
+    file_store.save_json(report, filename=f"data_readiness_{normalized_mode}.json", subdir="quality")
+    file_store.save_text(
+        str(report["markdown"]),
+        filename=f"data_readiness_{normalized_mode}.md",
+        subdir="quality",
+    )
+    return report
+
+
+def run_finedge_onboarding_plan(
+    as_of: date,
+    start: date,
+    symbols: list[str] | None = None,
+    config_path: str | None = None,
+    interval: str = "1d",
+    universe_file: str | None = None,
+    venue: str | None = None,
+    factor_root: str | None = None,
+) -> dict[str, object]:
+    """Create an ignored FinEdge paid-data onboarding plan and command sequence."""
+    settings = load_settings(config_path=config_path)
+    coverage = run_data_source_coverage(
+        as_of=as_of,
+        start=start,
+        symbols=symbols,
+        config_path=config_path,
+        interval=interval,
+        universe_file=universe_file,
+        venue=venue,
+    )
+    readiness = build_data_readiness_report(
+        coverage_report=coverage,
+        mode="long_term_scan",
+        profiles=settings.coverage_gates.profiles or None,
+    )
+    resolved_factor_root = factor_root or str(
+        Path(settings.storage.root_dir) / "factors" / f"finedge_paid_{as_of.isoformat()}"
+    )
+    report = FinEdgeOnboardingPlanner().build(
+        coverage_report=coverage,
+        gate_report=readiness,
+        universe_file=universe_file,
+        as_of=as_of.isoformat(),
+        factor_root=resolved_factor_root,
+    )
+    file_store = LocalFileStorage(settings.storage.root_dir)
+    quality_dir = file_store.root / "quality"
+    report["artifacts"] = {
+        "json": str(quality_dir / "finedge_onboarding_plan.json"),
+        "markdown": str(quality_dir / "finedge_onboarding_plan.md"),
+    }
+    file_store.save_json(report, filename="finedge_onboarding_plan.json", subdir="quality")
+    file_store.save_text(str(report["markdown"]), filename="finedge_onboarding_plan.md", subdir="quality")
     return report
 
 

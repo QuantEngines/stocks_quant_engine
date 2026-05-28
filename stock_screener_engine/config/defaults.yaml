@@ -7,6 +7,7 @@ features:
   include_sentiment: true
   include_event_signals: true
   include_regime_features: true
+  include_cross_sectional_features: true
   min_liquidity_threshold: 1000000
 nlp:
   enabled: true
@@ -277,6 +278,32 @@ integrations:
     api_key_env: SSE_BREEZE_API_KEY
     api_secret_env: SSE_BREEZE_API_SECRET
     session_token_env: SSE_BREEZE_SESSION_TOKEN
+coverage_gates:
+  profiles:
+    swing_scan:
+      security_master: 0.95
+      daily_ohlcv: 0.95
+    long_term_scan:
+      security_master: 0.95
+      daily_ohlcv: 0.90
+      financials: 0.80
+      valuations: 0.80
+      shareholding: 0.75
+    deep_research:
+      security_master: 0.95
+      daily_ohlcv: 0.90
+      financials: 0.80
+      valuations: 0.80
+      shareholding: 0.75
+      events_documents: 0.50
+    backtest:
+      security_master: 0.95
+      daily_ohlcv: 0.95
+      financials: 0.70
+      valuations: 0.70
+      shareholding: 0.70
+      corporate_actions: 0.80
+      historical_universe: 0.80
 scoring:
   long_term_min_score: 24.0
   swing_min_score: 28.0

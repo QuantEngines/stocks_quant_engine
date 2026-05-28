@@ -56,6 +56,20 @@ FEAT_MARKET_REGIME = "market_regime_score"
 FEAT_SECTOR_MOMENTUM = "sector_momentum"
 
 # ---------------------------------------------------------------------------
+# Cross-sectional / institutional context features
+# ---------------------------------------------------------------------------
+FEAT_CROSS_SECTIONAL_MOMENTUM_RANK = "cross_sectional_momentum_rank"
+FEAT_SECTOR_RELATIVE_MOMENTUM_RANK = "sector_relative_momentum_rank"
+FEAT_CROSS_SECTIONAL_QUALITY_RANK = "cross_sectional_quality_rank"
+FEAT_SECTOR_RELATIVE_QUALITY_RANK = "sector_relative_quality_rank"
+FEAT_CROSS_SECTIONAL_VALUE_RANK = "cross_sectional_value_rank"
+FEAT_QUALITY_VALUE_COMPOSITE = "quality_value_composite"
+FEAT_LIQUIDITY_PERCENTILE = "liquidity_percentile"
+FEAT_FEATURE_COVERAGE_SCORE = "feature_coverage_score"
+FEAT_SECTOR_FEATURE_COVERAGE_SCORE = "sector_feature_coverage_score"
+FEAT_RESEARCH_READINESS_SCORE = "research_readiness_score"
+
+# ---------------------------------------------------------------------------
 # Text / NLP derived features
 # ---------------------------------------------------------------------------
 FEAT_SENTIMENT_RECENT = "sentiment_score_recent"
@@ -124,6 +138,19 @@ REGIME_FEATURES: frozenset[str] = frozenset({
     FEAT_SECTOR_MOMENTUM,
 })
 
+CROSS_SECTIONAL_FEATURES: frozenset[str] = frozenset({
+    FEAT_CROSS_SECTIONAL_MOMENTUM_RANK,
+    FEAT_SECTOR_RELATIVE_MOMENTUM_RANK,
+    FEAT_CROSS_SECTIONAL_QUALITY_RANK,
+    FEAT_SECTOR_RELATIVE_QUALITY_RANK,
+    FEAT_CROSS_SECTIONAL_VALUE_RANK,
+    FEAT_QUALITY_VALUE_COMPOSITE,
+    FEAT_LIQUIDITY_PERCENTILE,
+    FEAT_FEATURE_COVERAGE_SCORE,
+    FEAT_SECTOR_FEATURE_COVERAGE_SCORE,
+    FEAT_RESEARCH_READINESS_SCORE,
+})
+
 TEXT_FEATURES: frozenset[str] = frozenset({
     FEAT_SENTIMENT_RECENT,
     FEAT_SENTIMENT_TREND,
@@ -182,4 +209,5 @@ ALL_FEATURES = (
     | SENTIMENT_FEATURES
     | REGIME_FEATURES
     | TEXT_FEATURES
+    | CROSS_SECTIONAL_FEATURES
 )
